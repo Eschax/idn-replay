@@ -981,6 +981,210 @@ body {
 }
 
 
+/* ==================== VIDEO ACTIONS TOOLBAR (Ala jkt48.preset.id) ==================== */
+.video-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+}
+
+.va-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-main);
+  padding: 6px 14px;
+  border-radius: 99px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  user-select: none;
+}
+
+.va-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.va-btn.active {
+  background: rgba(244, 63, 94, 0.18);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.3);
+}
+
+.va-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.va-btn.theater-btn {
+  margin-left: auto;
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+.va-btn.theater-btn:hover {
+  border-color: #818cf8;
+  color: #c7d2fe;
+}
+
+/* ==================== THEATER / CINEMA MODE ==================== */
+body.theater .container {
+  max-width: 100% !important;
+  padding: 10px 16px 40px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+body.theater .player-split-layout {
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  background: #060911;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+}
+
+body.theater .video-wrapper {
+  aspect-ratio: 16 / 9;
+  max-height: calc(100vh - 130px);
+}
+
+body.theater .chat-section-dock {
+  height: calc(100vh - 130px);
+  max-height: none;
+}
+
+@media (max-width: 900px) {
+  body.theater .player-split-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ==================== VIDEO PLAY OVERLAY ==================== */
+.video-play-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  backdrop-filter: blur(2px);
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.btn-big-play {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  padding: 14px 28px;
+  border-radius: 99px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  box-shadow: 0 0 24px rgba(244, 63, 94, 0.6);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.btn-big-play:hover {
+  transform: scale(1.06);
+  box-shadow: 0 0 32px rgba(244, 63, 94, 0.85);
+}
+
+/* ==================== CHAT & SIDE TABS (Ala jkt48.preset.id) ==================== */
+.chat-tabs-bar {
+  display: flex;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  gap: 6px;
+}
+
+.chat-tab-pill {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.chat-tab-pill:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chat-tab-pill.active {
+  background: rgba(244, 63, 94, 0.16);
+  border-color: rgba(244, 63, 94, 0.35);
+  color: #fff;
+}
+
+.dock-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dock-panel.hidden {
+  display: none !important;
+}
+
+.dock-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-search-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.dock-search-input:focus {
+  border-color: var(--accent);
+}
+
+.dock-scroll-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
 /* ==================== SPLIT PLAYER + CHAT REPLAY PANEL ==================== */
 .player-split-layout {
   display: grid;

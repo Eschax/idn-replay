@@ -131,6 +131,9 @@
             <div class="player-main-col">
               <div class="video-wrapper" id="videoWrapper">
                 <div id="videoLoadingBadge" class="video-loading-badge hidden">Memuat stream cepat...</div>
+                <div id="videoPlayOverlay" class="video-play-overlay hidden">
+                  <button type="button" class="btn-big-play" id="bigPlayBtn">▶ Putar Video</button>
+                </div>
                 <iframe
                   id="ytPlayer"
                   class="video-frame hidden"
@@ -140,49 +143,64 @@
                 <video id="hlsPlayer" class="video-frame hidden" controls playsinline preload="auto"></video>
               </div>
 
+              <!-- Action Toolbar (Ala jkt48.preset.id: Switch Player, Chat, Gift, Download, Theater) -->
+              <div class="video-actions" id="videoActionsToolbar">
+                <button type="button" class="va-btn player-pref-btn" id="playerPrefBtn" title="Ganti engine player (HLS.js / Native MP4 / Embed Web)">
+                  <span class="va-icon">🔄</span> <span id="playerPrefLabel">Switch Player</span>
+                </button>
+                <button type="button" class="va-btn active" id="toolbarTabChatBtn" title="Buka Tab Chat">
+                  <span class="va-icon">💬</span> <span>Chat</span>
+                </button>
+                <button type="button" class="va-btn" id="toolbarTabGiftBtn" title="Buka Tab Top Gifter &amp; Hadiah">
+                  <span class="va-icon">🎁</span> <span>Gift</span>
+                </button>
+                <button type="button" class="va-btn" id="toolbarDownloadBtn" title="Download Video (.MP4)">
+                  <span class="va-icon">⬇</span> <span>Download</span>
+                </button>
+                <button type="button" class="va-btn theater-btn" id="toolbarTheaterBtn" title="Theater Mode (Tampilan Lebar Bioskop)">
+                  <span class="va-icon">📺</span> <span id="theaterBtnLabel">Theater</span>
+                </button>
+              </div>
+
               <!-- Multi-Part Bar & Coverage Info -->
               <div id="playerPartsBar" class="player-parts-bar hidden"></div>
               <div class="player-footer" id="playerFooterInfo"></div>
-
-              <!-- Secondary Extras Toggle (Gifts & Screenshots) -->
-              <div class="player-extras-accordion">
-                <div class="extras-nav-btns">
-                  <button type="button" class="btn-action subtle" id="toggleGiftsBtn">🎁 Top Gifter &amp; Hadiah</button>
-                  <button type="button" class="btn-action subtle" id="toggleScreenshotsBtn">📸 Screenshot &amp; Leaderboard</button>
-                </div>
-                <div id="sidePanel-gifts" class="extra-content-box hidden">
-                  <div class="chat-messages" id="sideGiftsContent">
-                    <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat daftar Top Gifter &amp; Gift.</div>
-                  </div>
-                </div>
-                <div id="sidePanel-screenshots" class="extra-content-box hidden">
-                  <div class="chat-messages" id="sideScreenshotsContent">
-                    <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat Screenshot &amp; Kartu Leaderboard.</div>
-                  </div>
-                </div>
-              </div>
             </div>
 
-            <!-- Right: DEDICATED CHAT HISTORY BOX (Kotak Tersendiri di Sebelah Video) -->
+            <!-- Right: DEDICATED SIDE PANEL (Tabs Ala jkt48.preset.id: Chat, Gift, Screenshot) -->
             <aside class="chat-section-dock" id="chatSectionDock">
-              <div class="chat-dock-header">
-                <div class="chat-dock-title">
-                  <span class="chat-dock-icon">💬</span>
-                  <div>
-                    <div class="chat-dock-heading">Riwayat Chat Live</div>
-                    <div class="chat-dock-sub" id="chatPanelSub">Memuat komentar...</div>
-                  </div>
-                </div>
-                <div class="chat-dock-actions">
+              <div class="chat-tabs-bar" role="tablist">
+                <button type="button" class="chat-tab-pill active" id="tabDockChatBtn">💬 Chat</button>
+                <button type="button" class="chat-tab-pill" id="tabDockGiftBtn">🎁 Gift &amp; Fans</button>
+                <button type="button" class="chat-tab-pill" id="tabDockScreenshotBtn">📸 Screenshot</button>
+              </div>
+
+              <!-- Tab 1: Chat Feed -->
+              <div id="dockPanelChat" class="dock-panel active">
+                <div class="dock-search-wrap">
+                  <input type="text" id="chatSearchInput" class="dock-search-input" placeholder="🔍 Cari di riwayat chat..." />
                   <button type="button" id="chatResumeSyncBtn" class="btn-chat-sync hidden" title="Kembali Sinkron ke Posisi Video">⬇ Auto-Sync</button>
                   <button type="button" id="refreshCommentsBtn" class="icon-btn-compact" title="Muat Ulang Komentar">↻</button>
                 </div>
+                <div class="chat-dock-messages" id="chatMessagesList"></div>
+                <div class="chat-dock-footer">
+                  <span id="chatPanelSub" style="margin-right:8px;color:var(--text-muted)">Memuat chat...</span>
+                  <span>💡 Klik <code>[mm:ss]</code> untuk loncat video</span>
+                </div>
               </div>
 
-              <div class="chat-dock-messages" id="chatMessagesList"></div>
+              <!-- Tab 2: Gift & Top Gifters -->
+              <div id="dockPanelGift" class="dock-panel hidden">
+                <div class="dock-scroll-content" id="sideGiftsContent">
+                  <div style="color:var(--text-muted);font-size:12px;padding:16px">Pilih tayangan replay untuk melihat Top Gifter &amp; Hadiah.</div>
+                </div>
+              </div>
 
-              <div class="chat-dock-footer">
-                <span>💡 Klik waktu <code>[mm:ss]</code> pada chat untuk loncat ke video</span>
+              <!-- Tab 3: Screenshots & Leaderboards -->
+              <div id="dockPanelScreenshot" class="dock-panel hidden">
+                <div class="dock-scroll-content" id="sideScreenshotsContent">
+                  <div style="color:var(--text-muted);font-size:12px;padding:16px">Pilih tayangan replay untuk melihat Screenshot &amp; Leaderboard.</div>
+                </div>
               </div>
             </aside>
           </div>

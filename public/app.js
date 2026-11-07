@@ -138,6 +138,25 @@ const els = {
   sideGiftsContent: document.getElementById('sideGiftsContent'),
   sideScreenshotsContent: document.getElementById('sideScreenshotsContent'),
 
+  // Ala jkt48.preset.id elements
+  videoPlayOverlay: document.getElementById('videoPlayOverlay'),
+  bigPlayBtn: document.getElementById('bigPlayBtn'),
+  playerPrefBtn: document.getElementById('playerPrefBtn'),
+  playerPrefLabel: document.getElementById('playerPrefLabel'),
+  toolbarTabChatBtn: document.getElementById('toolbarTabChatBtn'),
+  toolbarTabGiftBtn: document.getElementById('toolbarTabGiftBtn'),
+  toolbarDownloadBtn: document.getElementById('toolbarDownloadBtn'),
+  toolbarTheaterBtn: document.getElementById('toolbarTheaterBtn'),
+  theaterBtnLabel: document.getElementById('theaterBtnLabel'),
+
+  tabDockChatBtn: document.getElementById('tabDockChatBtn'),
+  tabDockGiftBtn: document.getElementById('tabDockGiftBtn'),
+  tabDockScreenshotBtn: document.getElementById('tabDockScreenshotBtn'),
+  dockPanelChat: document.getElementById('dockPanelChat'),
+  dockPanelGift: document.getElementById('dockPanelGift'),
+  dockPanelScreenshot: document.getElementById('dockPanelScreenshot'),
+  chatSearchInput: document.getElementById('chatSearchInput'),
+
   // Replays Tab
   liveMiniBanner: document.getElementById('liveMiniBanner'),
   memberChipsContainer: document.getElementById('memberChipsContainer'),
@@ -384,21 +403,29 @@ async function fetchJkcDirect(endpointPath, params = {}) {
     }
   }
   const key = state.apiKey || JKC_DEFAULT_FALLBACK;
-  const headers = {};
   if (key) {
-    headers['Authorization'] = `Bearer ${key}`;
-    headers['x-api-key'] = key;
     url.searchParams.set('apikey', key);
     url.searchParams.set('api_key', key);
   }
-  const res = await fetch(url.toString(), { headers });
+  
+  let res = null;
+  try {
+    // Try clean simple CORS GET first (no custom headers = no preflight blockage)
+    res = await fetch(url.toString());
+  } catch (err) {
+    // If strict environment requires header, retry with x-api-key
+    res = await fetch(url.toString(), {
+      headers: key ? { 'x-api-key': key } : {}
+    });
+  }
+
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     throw new Error(`JKT48Connect HTTP ${res.status}: ${txt.slice(0, 100) || res.statusText}`);
   }
   const quotaRemaining = res.headers.get('x-ratelimit-remaining');
   const quotaLimit = res.headers.get('x-ratelimit-limit');
-  if (quotaRemaining && quotaLimit) {
+  if (quotaRemaining && quotaLimit && els.jkcQuotaBadge) {
     els.jkcQuotaBadge.textContent = `Kuota API: ${quotaRemaining}/${quotaLimit}`;
   }
   return res.json();
@@ -1160,6 +1187,15 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
   }
   if (!url) return;
   setVideoLoading('Memuat stream cepat...');
+  if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+
+  const onReady = () => {
+    setVideoLoading('');
+    if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+  };
+  els.hlsPlayer.onloadedmetadata = onReady;
+  els.hlsPlayer.oncanplay = onReady;
+  els.hlsPlayer.onplaying = onReady;
 
   const isMp4 = url.includes('.mp4') && !url.includes('.m3u8');
   if (isMp4) {
@@ -1168,7 +1204,14 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
       if (onFatalError) onFatalError(new Error('native_mp4_failed'));
     };
     els.hlsPlayer.src = url;
-    els.hlsPlayer.play().catch(() => {});
+    const p = els.hlsPlayer.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(err => {
+        console.warn('Autoplay terhalang kebijakan browser:', err);
+        setVideoLoading('');
+        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+      });
+    }
     return;
   }
 
@@ -1179,16 +1222,20 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
       startFragPrefetch: true,
       maxBufferLength: 25,
       maxMaxBufferLength: 60,
-      backBufferLength: 30,
-      xhrSetup: xhr => {
-        xhr.withCredentials = true;
-      }
+      backBufferLength: 30
     });
     state.hlsInstance = hls;
     hls.loadSource(url);
     hls.attachMedia(els.hlsPlayer);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      els.hlsPlayer.play().catch(() => {});
+      const p = els.hlsPlayer.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => {
+          console.warn('Autoplay terhalang browser:', err);
+          setVideoLoading('');
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+        });
+      }
     });
     let recoveredOnce = false;
     hls.on(Hls.Events.ERROR, (_, data) => {
@@ -1204,11 +1251,17 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
     });
   } else if (els.hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
     els.hlsPlayer.src = url;
-    els.hlsPlayer.play().catch(() => {});
+    const p = els.hlsPlayer.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {
+        setVideoLoading('');
+        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+      });
+    }
   }
 }
 
-async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
+async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
   showToast(`Memuat stream & detail ${item.nickname}...`);
   try {
     const d = await getReplayDetail(item.dataId);
@@ -1217,7 +1270,11 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
     state.currentPartIdx = 0;
     state.currentPartBaseOffsetSec = 0;
     els.playerSection.classList.remove('hidden');
-    switchSideTab(defaultSideTab);
+    
+    // Smooth scroll straight to video player (solves user not noticing player opened)
+    try {
+      els.playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch {}
 
     const isIdn = d.platform === 'IDN';
     els.playerPlatformBadge.className = `platform-pill ${isIdn ? 'idn' : 'sr'}`;
@@ -1241,20 +1298,110 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       startedAt: refStart
     });
 
-    els.playerDownloadMp4Btn.classList.remove('hidden');
-    els.playerDownloadMp4Btn.onclick = () => openDownloadModal(d);
+    // ── Tab Switcher Ala jkt48.preset.id (Chat, Gift, Screenshot) ──
+    function switchDockTab(tab) {
+      const isChat = tab === 'chat' || tab === 'comments';
+      const isGift = tab === 'gift' || tab === 'gifts';
+      const isScreenshot = tab === 'screenshot' || tab === 'screenshots';
 
-    els.switchPlayerEngineBtn.classList.remove('hidden');
+      if (els.tabDockChatBtn) els.tabDockChatBtn.classList.toggle('active', isChat);
+      if (els.tabDockGiftBtn) els.tabDockGiftBtn.classList.toggle('active', isGift);
+      if (els.tabDockScreenshotBtn) els.tabDockScreenshotBtn.classList.toggle('active', isScreenshot);
+
+      if (els.toolbarTabChatBtn) els.toolbarTabChatBtn.classList.toggle('active', isChat);
+      if (els.toolbarTabGiftBtn) els.toolbarTabGiftBtn.classList.toggle('active', isGift);
+
+      if (els.dockPanelChat) els.dockPanelChat.classList.toggle('hidden', !isChat);
+      if (els.dockPanelGift) els.dockPanelGift.classList.toggle('hidden', !isGift);
+      if (els.dockPanelScreenshot) els.dockPanelScreenshot.classList.toggle('hidden', !isScreenshot);
+    }
+
+    if (els.tabDockChatBtn) els.tabDockChatBtn.onclick = () => switchDockTab('chat');
+    if (els.tabDockGiftBtn) els.tabDockGiftBtn.onclick = () => switchDockTab('gift');
+    if (els.tabDockScreenshotBtn) els.tabDockScreenshotBtn.onclick = () => switchDockTab('screenshot');
+
+    if (els.toolbarTabChatBtn) els.toolbarTabChatBtn.onclick = () => switchDockTab('chat');
+    if (els.toolbarTabGiftBtn) els.toolbarTabGiftBtn.onclick = () => switchDockTab('gift');
+    if (els.toolbarDownloadBtn) els.toolbarDownloadBtn.onclick = () => openDownloadModal(d);
+
+    // Initial tab
+    switchDockTab(defaultSideTab);
+
+    // ── Theater / Cinema Mode Ala jkt48.preset.id ──
+    function toggleTheater() {
+      const isTh = document.body.classList.toggle('theater');
+      if (els.toolbarTheaterBtn) els.toolbarTheaterBtn.classList.toggle('active', isTh);
+      if (els.theaterBtnLabel) els.theaterBtnLabel.textContent = isTh ? 'Exit Theater' : 'Theater';
+      showToast(isTh ? 'Mode Theater (Layar Lebar) Aktif' : 'Mode Normal');
+      try {
+        els.playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch {}
+    }
+    if (els.toolbarTheaterBtn) els.toolbarTheaterBtn.onclick = toggleTheater;
+
+    // ── Switch Player Engine Ala jkt48.preset.id ──
     const updateSwitchEngineLabel = () => {
-      els.switchPlayerEngineBtn.textContent =
-        state.playerEngine === 'cinema' ? '🎬 Mode Player Asli' : '⚡ Mode Cinema (Sync Chat)';
+      let lbl = 'Switch Player';
+      if (state.playerEngine === 'cinema') lbl = 'Player: HLS.js (Sync)';
+      else if (state.playerEngine === 'official') lbl = 'Player: Web Resmi';
+      else if (state.playerEngine === 'youtube') lbl = 'Player: YouTube Full';
+      if (els.playerPrefLabel) els.playerPrefLabel.textContent = lbl;
+      if (els.switchPlayerEngineBtn) els.switchPlayerEngineBtn.textContent = '🔄 ' + lbl;
     };
     updateSwitchEngineLabel();
-    els.switchPlayerEngineBtn.onclick = () => {
-      state.playerEngine = state.playerEngine === 'cinema' ? 'official' : 'cinema';
+
+    const cyclePlayerEngine = () => {
+      if (state.playerEngine === 'cinema') {
+        state.playerEngine = 'official';
+      } else if (state.playerEngine === 'official') {
+        if (d.youtubeId) state.playerEngine = 'youtube';
+        else state.playerEngine = 'cinema';
+      } else {
+        state.playerEngine = 'cinema';
+      }
       updateSwitchEngineLabel();
+      showToast(`Beralih ke ${els.playerPrefLabel ? els.playerPrefLabel.textContent : state.playerEngine}`);
       playPart(state.currentPartIdx);
     };
+
+    if (els.playerPrefBtn) els.playerPrefBtn.onclick = cyclePlayerEngine;
+    if (els.switchPlayerEngineBtn) els.switchPlayerEngineBtn.onclick = cyclePlayerEngine;
+
+    // ── Live Chat Real-Time Search ──
+    if (els.chatSearchInput) {
+      els.chatSearchInput.value = '';
+      els.chatSearchInput.oninput = () => {
+        const q = (els.chatSearchInput.value || '').trim().toLowerCase();
+        const msgs = els.chatMessagesList.querySelectorAll('.chat-msg');
+        msgs.forEach(m => {
+          if (!q) {
+            m.style.display = '';
+          } else {
+            const txt = (m.textContent || '').toLowerCase();
+            m.style.display = txt.includes(q) ? '' : 'none';
+          }
+        });
+      };
+    }
+
+    // ── Big Play Overlay Button (Handles blocked autoplay smoothly) ──
+    if (els.bigPlayBtn) {
+      els.bigPlayBtn.onclick = () => {
+        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+        els.hlsPlayer.play().catch(e => console.warn(e));
+      };
+    }
+    if (els.videoPlayOverlay) {
+      els.videoPlayOverlay.onclick = e => {
+        if (e.target === els.videoPlayOverlay) {
+          els.videoPlayOverlay.classList.add('hidden');
+          els.hlsPlayer.play().catch(e => console.warn(e));
+        }
+      };
+    }
+
+    els.playerDownloadMp4Btn.classList.remove('hidden');
+    els.playerDownloadMp4Btn.onclick = () => openDownloadModal(d);
 
     // Render prominent Multi-Part selector right above controls
     const partsBar = els.playerPartsBar;
@@ -1345,6 +1492,15 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       if (state.hlsInstance) {
         state.hlsInstance.destroy();
         state.hlsInstance = null;
+      }
+
+      if (state.playerEngine === 'youtube' && d.youtubeId) {
+        setVideoLoading('');
+        els.hlsPlayer.pause();
+        els.hlsPlayer.classList.add('hidden');
+        els.ytPlayer.classList.remove('hidden');
+        els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&rel=0`;
+        return;
       }
 
       if (state.playerEngine === 'official' && playerUrl) {
@@ -2059,14 +2215,31 @@ async function loadReplays(force = false) {
       const typeParam =
         state.platform === 'IDN' ? 'idn' : state.platform === 'SHOWROOM' ? 'showroom' : 'all';
       const hasFilter = Boolean(state.selectedMember || state.searchQuery);
-      const directJson = await fetchJkcDirect('/api/recent', {
-        page: state.page,
-        perpage: hasFilter ? 60 : 24,
-        group: 'jkt48',
-        type: typeParam,
-        sort: 'date',
-        order: '-1'
-      });
+      let directJson = null;
+      try {
+        directJson = await fetchJkcDirect('/api/recent', {
+          page: state.page,
+          perpage: hasFilter ? 60 : 24,
+          group: 'jkt48',
+          type: typeParam,
+          sort: 'date',
+          order: '-1'
+        });
+      } catch (firstErr) {
+        // If stored localStorage key was invalid, reset to verified fallback key and retry
+        console.warn('Percobaan pertama direct gagal, reset ke fallback key:', firstErr.message);
+        state.apiKey = JKC_DEFAULT_FALLBACK;
+        try { localStorage.removeItem(JKC_STORAGE_KEY); } catch {}
+        directJson = await fetchJkcDirect('/api/recent', {
+          page: state.page,
+          perpage: hasFilter ? 60 : 24,
+          group: 'jkt48',
+          type: typeParam,
+          sort: 'date',
+          order: '-1'
+        });
+      }
+
       const rawList = Array.isArray(directJson?.recents)
         ? directJson.recents
         : Array.isArray(directJson)
