@@ -8,6 +8,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.vidstack.io/player/theme.css" />
+  <link rel="stylesheet" href="https://cdn.vidstack.io/player/video.css" />
+  <script type="module" src="https://cdn.vidstack.io/player"></script>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -134,6 +137,17 @@
                 <div id="videoPlayOverlay" class="video-play-overlay hidden">
                   <button type="button" class="btn-big-play" id="bigPlayBtn">▶ Putar Video</button>
                 </div>
+
+                <!-- Double Tap / Click Quick-Skip Overlays (Ala YouTube / jkt48.preset.id) -->
+                <div id="skipOverlayLeft" class="skip-tap-side left" title="Klik 2x: Mundur 10s">
+                  <span class="skip-tap-badge">⏪ 10s</span>
+                </div>
+                <div id="skipOverlayRight" class="skip-tap-side right" title="Klik 2x: Maju 10s">
+                  <span class="skip-tap-badge">⏩ 10s</span>
+                </div>
+
+                <!-- Player Hosts -->
+                <div id="vidstackHost" class="video-frame hidden"></div>
                 <iframe
                   id="ytPlayer"
                   class="video-frame hidden"
@@ -143,9 +157,24 @@
                 <video id="hlsPlayer" class="video-frame hidden" controls playsinline preload="auto"></video>
               </div>
 
+              <!-- Unified Custom Controls (Seekbar, Fast Forward, Speed, Timeline Scrub) -->
+              <div class="player-custom-controls" id="playerCustomControls">
+                <button type="button" class="btn-ctrl-play" id="btnCtrlPlayPause" title="Putar / Jeda (Spasi / K)">▶</button>
+                <button type="button" class="btn-ctrl-skip" id="btnCtrlSkipBack" title="Mundur 10 Detik (Panah Kiri / J)">⏪ 10s</button>
+                <button type="button" class="btn-ctrl-skip" id="btnCtrlSkipForward" title="Maju 10 Detik (Panah Kanan / L)">⏩ 10s</button>
+                <div class="ctrl-time-display" id="ctrlTimeDisplay">
+                  <span id="ctrlCurrentTime">00:00</span> / <span id="ctrlTotalDuration">00:00</span>
+                </div>
+                <div class="ctrl-seek-slider-wrap">
+                  <input type="range" id="ctrlSeekSlider" min="0" max="100" value="0" step="0.1" title="Geser ke menit tertentu" />
+                </div>
+                <button type="button" class="btn-ctrl-speed" id="btnCtrlSpeed" title="Kecepatan Putar (0.75x, 1x, 1.25x, 1.5x, 2x)">1.0x</button>
+                <button type="button" class="btn-ctrl-fullscreen" id="btnCtrlFullscreen" title="Layar Penuh (F)">⛶</button>
+              </div>
+
               <!-- Action Toolbar (Ala jkt48.preset.id: Switch Player, Chat, Gift, Download, Theater) -->
               <div class="video-actions" id="videoActionsToolbar">
-                <button type="button" class="va-btn player-pref-btn" id="playerPrefBtn" title="Ganti engine player (HLS.js / Native MP4 / Embed Web)">
+                <button type="button" class="va-btn player-pref-btn" id="playerPrefBtn" title="Ganti engine player (YouTube Full / Vidstack MP4 / HLS.js / Web Resmi)">
                   <span class="va-icon">🔄</span> <span id="playerPrefLabel">Switch Player</span>
                 </button>
                 <button type="button" class="va-btn active" id="toolbarTabChatBtn" title="Buka Tab Chat">

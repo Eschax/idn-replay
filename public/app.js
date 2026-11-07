@@ -157,6 +157,20 @@ const els = {
   dockPanelScreenshot: document.getElementById('dockPanelScreenshot'),
   chatSearchInput: document.getElementById('chatSearchInput'),
 
+  // Unified Controls & Vidstack (Ala jkt48.preset.id)
+  vidstackHost: document.getElementById('vidstackHost'),
+  skipOverlayLeft: document.getElementById('skipOverlayLeft'),
+  skipOverlayRight: document.getElementById('skipOverlayRight'),
+  playerCustomControls: document.getElementById('playerCustomControls'),
+  btnCtrlPlayPause: document.getElementById('btnCtrlPlayPause'),
+  btnCtrlSkipBack: document.getElementById('btnCtrlSkipBack'),
+  btnCtrlSkipForward: document.getElementById('btnCtrlSkipForward'),
+  ctrlCurrentTime: document.getElementById('ctrlCurrentTime'),
+  ctrlTotalDuration: document.getElementById('ctrlTotalDuration'),
+  ctrlSeekSlider: document.getElementById('ctrlSeekSlider'),
+  btnCtrlSpeed: document.getElementById('btnCtrlSpeed'),
+  btnCtrlFullscreen: document.getElementById('btnCtrlFullscreen'),
+
   // Replays Tab
   liveMiniBanner: document.getElementById('liveMiniBanner'),
   memberChipsContainer: document.getElementById('memberChipsContainer'),
@@ -824,18 +838,11 @@ els.chatMessagesList.addEventListener('click', e => {
   const seekBadge = e.target.closest('[data-seek-sec]');
   if (seekBadge) {
     const targetSessionSec = Number(seekBadge.dataset.seekSec);
-    if (!els.hlsPlayer.classList.contains('hidden') && !Number.isNaN(targetSessionSec)) {
+    if (!Number.isNaN(targetSessionSec)) {
       const localSec = Math.max(0, targetSessionSec - state.currentPartBaseOffsetSec);
-      const vidDur = els.hlsPlayer.duration || Infinity;
-      const safeSec = Math.min(localSec, isFinite(vidDur) && vidDur > 0 ? Math.max(0, vidDur - 1) : localSec);
       userScrolledChat = false;
       els.chatResumeSyncBtn.classList.add('hidden');
-      els.hlsPlayer.currentTime = safeSec;
-      els.hlsPlayer.play().catch(() => {});
-      syncChatToVideoTime(true);
-      if (localSec > vidDur && isFinite(vidDur)) {
-        showToast(`Chat ini [${formatSeconds(targetSessionSec)}] berada di luar durasi rekaman video R2 yang tersimpan.`);
-      }
+      playerSeekTo(localSec);
     }
   }
 });
@@ -882,8 +889,9 @@ function syncChatToVideoTime(force = false) {
   if (!force && now - state.lastTimeUpdateMs < 250) return;
   state.lastTimeUpdateMs = now;
 
-  const vidDuration = els.hlsPlayer.duration || 0;
-  const vidCurrentTime = els.hlsPlayer.currentTime || 0;
+  const p = getActivePlayerAdapter();
+  const vidDuration = p.getDuration() || 0;
+  const vidCurrentTime = p.getCurrentTime() || 0;
   const sessionSec = vidCurrentTime + state.currentPartBaseOffsetSec;
 
   const firstOff = state.chatComments[0]?.offsetSeconds ?? 0;
@@ -1010,8 +1018,20 @@ async function loadCommentsForPlayer(opts) {
   els.refreshCommentsBtn.onclick = fetchOnce;
 }
 
-els.hlsPlayer.addEventListener('timeupdate', () => syncChatToVideoTime(false));
-els.hlsPlayer.addEventListener('seeked', () => syncChatToVideoTime(true));
+els.hlsPlayer.addEventListener('timeupdate', () => {
+  updateControlsTime(els.hlsPlayer.currentTime, els.hlsPlayer.duration);
+  syncChatToVideoTime(false);
+});
+els.hlsPlayer.addEventListener('seeked', () => {
+  updateControlsTime(els.hlsPlayer.currentTime, els.hlsPlayer.duration);
+  syncChatToVideoTime(true);
+});
+els.hlsPlayer.addEventListener('play', () => {
+  if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
+});
+els.hlsPlayer.addEventListener('pause', () => {
+  if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
+});
 
 // ============================================================================
 // 4. ULTRA-FAST CINEMA PLAYER (HLS VOD BYTE-RANGE + RANGE MP4 + FALLBACK)
@@ -1032,6 +1052,10 @@ els.hlsPlayer.addEventListener('waiting', () => setVideoLoading('Menyambung buff
 function destroyHls() {
   stopChatPolling();
   setVideoLoading('');
+  if (els.vidstackHost) {
+    els.vidstackHost.innerHTML = '';
+    els.vidstackHost.classList.add('hidden');
+  }
   if (state.mediaSourceAbort) {
     state.mediaSourceAbort.abort();
     state.mediaSourceAbort = null;
@@ -1053,6 +1077,280 @@ function destroyHls() {
   els.playerDownloadMp4Btn.classList.add('hidden');
   els.switchPlayerEngineBtn.classList.add('hidden');
 }
+
+// ============================================================================
+// UNIFIED PLAYER CONTROLLER (ALA JKT48.PRESET.ID)
+// ============================================================================
+let userDraggingSeek = false;
+let currentPlaybackSpeed = 1.0;
+const PLAYBACK_SPEEDS = [0.75, 1.0, 1.25, 1.5, 2.0];
+
+function getActivePlayerAdapter() {
+  if (els.vidstackHost && !els.vidstackHost.classList.contains('hidden')) {
+    const vp = els.vidstackHost.querySelector('media-player');
+    if (vp) {
+      return {
+        type: 'vidstack',
+        el: vp,
+        getCurrentTime: () => Number(vp.currentTime) || 0,
+        getDuration: () => Number(vp.duration) || 0,
+        seekTo: sec => { vp.currentTime = Math.max(0, sec); },
+        play: () => vp.play().catch(() => {}),
+        pause: () => vp.pause(),
+        paused: () => Boolean(vp.paused),
+        setSpeed: r => { vp.playbackRate = r; }
+      };
+    }
+  }
+  if (els.ytPlayer && !els.ytPlayer.classList.contains('hidden')) {
+    return {
+      type: 'youtube',
+      el: els.ytPlayer,
+      getCurrentTime: () => state.ytPlayerCurrentTime || 0,
+      getDuration: () => state.ytPlayerDuration || (state.currentPlayingReplay?.durationSeconds || 0),
+      seekTo: sec => {
+        state.ytPlayerCurrentTime = sec;
+        try {
+          els.ytPlayer.contentWindow.postMessage(
+            JSON.stringify({ event: 'command', func: 'seekTo', args: [sec, true] }),
+            '*'
+          );
+        } catch {}
+      },
+      play: () => {
+        try {
+          els.ytPlayer.contentWindow.postMessage(
+            JSON.stringify({ event: 'command', func: 'playVideo', args: [] }),
+            '*'
+          );
+        } catch {}
+      },
+      pause: () => {
+        try {
+          els.ytPlayer.contentWindow.postMessage(
+            JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }),
+            '*'
+          );
+        } catch {}
+      },
+      paused: () => false,
+      setSpeed: r => {
+        try {
+          els.ytPlayer.contentWindow.postMessage(
+            JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [r] }),
+            '*'
+          );
+        } catch {}
+      }
+    };
+  }
+  return {
+    type: 'video',
+    el: els.hlsPlayer,
+    getCurrentTime: () => Number(els.hlsPlayer.currentTime) || 0,
+    getDuration: () => Number(els.hlsPlayer.duration) || 0,
+    seekTo: sec => { els.hlsPlayer.currentTime = Math.max(0, sec); },
+    play: () => els.hlsPlayer.play().catch(() => {}),
+    pause: () => els.hlsPlayer.pause(),
+    paused: () => Boolean(els.hlsPlayer.paused),
+    setSpeed: r => { els.hlsPlayer.playbackRate = r; }
+  };
+}
+
+function updateControlsTime(curSec, durSec) {
+  if (els.ctrlCurrentTime) els.ctrlCurrentTime.textContent = formatSeconds(Math.floor(curSec));
+  if (els.ctrlTotalDuration) {
+    els.ctrlTotalDuration.textContent =
+      isFinite(durSec) && durSec > 0 ? formatSeconds(Math.floor(durSec)) : '--:--';
+  }
+  if (els.ctrlSeekSlider && !userDraggingSeek && isFinite(durSec) && durSec > 0) {
+    els.ctrlSeekSlider.value = String((curSec / durSec) * 100);
+  }
+}
+
+function playerSkip(deltaSec) {
+  const p = getActivePlayerAdapter();
+  const cur = p.getCurrentTime();
+  const dur = p.getDuration();
+  const target = Math.max(0, isFinite(dur) && dur > 0 ? Math.min(dur - 0.5, cur + deltaSec) : cur + deltaSec);
+  p.seekTo(target);
+  updateControlsTime(target, dur);
+  syncChatToVideoTime(true);
+}
+
+function playerPlayPause() {
+  const p = getActivePlayerAdapter();
+  if (p.paused && p.paused()) {
+    p.play();
+    if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
+  } else {
+    p.pause();
+    if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
+  }
+}
+
+function playerSeekTo(sec) {
+  const p = getActivePlayerAdapter();
+  const dur = p.getDuration();
+  const safeSec = Math.max(0, isFinite(dur) && dur > 0 ? Math.min(dur - 0.5, sec) : sec);
+  p.seekTo(safeSec);
+  p.play();
+  updateControlsTime(safeSec, dur);
+  syncChatToVideoTime(true);
+}
+
+function cyclePlayerSpeed() {
+  const idx = PLAYBACK_SPEEDS.indexOf(currentPlaybackSpeed);
+  currentPlaybackSpeed = PLAYBACK_SPEEDS[(idx + 1) % PLAYBACK_SPEEDS.length];
+  const p = getActivePlayerAdapter();
+  p.setSpeed(currentPlaybackSpeed);
+  if (els.btnCtrlSpeed) els.btnCtrlSpeed.textContent = `${currentPlaybackSpeed}x`;
+  showToast(`Kecepatan putar: ${currentPlaybackSpeed}x`);
+}
+
+function togglePlayerFullscreen() {
+  const container = els.videoWrapper;
+  if (!container) return;
+  if (!document.fullscreenElement) {
+    if (container.requestFullscreen) container.requestFullscreen();
+    else if (container.webkitRequestFullscreen) container.webkitRequestFullscreen();
+  } else {
+    if (document.exitFullscreen) document.exitFullscreen();
+  }
+}
+
+function triggerSkipFeedback(side, delta) {
+  const overlay = side === 'left' ? els.skipOverlayLeft : els.skipOverlayRight;
+  if (overlay) {
+    overlay.classList.add('animating');
+    setTimeout(() => overlay.classList.remove('animating'), 350);
+  }
+  playerSkip(delta);
+}
+
+function ensureVidstackPlayer(src, title) {
+  if (!els.vidstackHost) return null;
+  els.vidstackHost.innerHTML = `
+    <media-player
+      class="replay-media-player"
+      title="${escapeHtml(title || 'JKT48 Replay')}"
+      src="${src}"
+      view-type="video"
+      stream-type="on-demand"
+      load="eager"
+      playsinline
+    >
+      <media-provider></media-provider>
+      <media-video-layout></media-video-layout>
+    </media-player>
+  `;
+  const vp = els.vidstackHost.querySelector('media-player');
+  if (vp) {
+    vp.addEventListener('time-update', () => {
+      const cur = vp.currentTime || 0;
+      const dur = vp.duration || 0;
+      updateControlsTime(cur, dur);
+      syncChatToVideoTime(false);
+    });
+    vp.addEventListener('play', () => {
+      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
+    });
+    vp.addEventListener('pause', () => {
+      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
+    });
+    vp.addEventListener('ended', () => {
+      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
+      if (state.currentPartIdx + 1 < (state.currentPlayingReplay?.recordings?.length || 0)) {
+        playPart(state.currentPartIdx + 1);
+      }
+    });
+  }
+  return vp;
+}
+
+// Wire persistent controls events once
+(function initUnifiedPlayerControls() {
+  if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.onclick = playerPlayPause;
+  if (els.btnCtrlSkipBack) els.btnCtrlSkipBack.onclick = () => playerSkip(-10);
+  if (els.btnCtrlSkipForward) els.btnCtrlSkipForward.onclick = () => playerSkip(10);
+  if (els.btnCtrlSpeed) els.btnCtrlSpeed.onclick = cyclePlayerSpeed;
+  if (els.btnCtrlFullscreen) els.btnCtrlFullscreen.onclick = togglePlayerFullscreen;
+
+  if (els.skipOverlayLeft) {
+    let lastTap = 0;
+    els.skipOverlayLeft.onclick = () => {
+      const now = Date.now();
+      if (now - lastTap < 350) {
+        triggerSkipFeedback('left', -10);
+        lastTap = 0;
+      } else {
+        lastTap = now;
+      }
+    };
+  }
+
+  if (els.skipOverlayRight) {
+    let lastTap = 0;
+    els.skipOverlayRight.onclick = () => {
+      const now = Date.now();
+      if (now - lastTap < 350) {
+        triggerSkipFeedback('right', 10);
+        lastTap = 0;
+      } else {
+        lastTap = now;
+      }
+    };
+  }
+
+  if (els.ctrlSeekSlider) {
+    els.ctrlSeekSlider.onmousedown = () => { userDraggingSeek = true; };
+    els.ctrlSeekSlider.ontouchstart = () => { userDraggingSeek = true; };
+    els.ctrlSeekSlider.oninput = () => {
+      const p = getActivePlayerAdapter();
+      const dur = p.getDuration();
+      if (isFinite(dur) && dur > 0) {
+        const targetSec = (Number(els.ctrlSeekSlider.value) / 100) * dur;
+        if (els.ctrlCurrentTime) els.ctrlCurrentTime.textContent = formatSeconds(Math.floor(targetSec));
+      }
+    };
+    const commitSeek = () => {
+      userDraggingSeek = false;
+      const p = getActivePlayerAdapter();
+      const dur = p.getDuration();
+      if (isFinite(dur) && dur > 0) {
+        const targetSec = (Number(els.ctrlSeekSlider.value) / 100) * dur;
+        p.seekTo(targetSec);
+        syncChatToVideoTime(true);
+      }
+    };
+    els.ctrlSeekSlider.onmouseup = commitSeek;
+    els.ctrlSeekSlider.ontouchend = commitSeek;
+    els.ctrlSeekSlider.onchange = commitSeek;
+  }
+
+  // Keyboard Shortcuts (Space: Play/Pause, ArrowLeft/J: -10s, ArrowRight/L: +10s, F: Fullscreen, T: Theater)
+  document.addEventListener('keydown', e => {
+    if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
+    if (!els.playerSection || els.playerSection.classList.contains('hidden')) return;
+
+    if (e.key === ' ' || e.key === 'k' || e.key === 'K') {
+      e.preventDefault();
+      playerPlayPause();
+    } else if (e.key === 'ArrowLeft' || e.key === 'j' || e.key === 'J') {
+      e.preventDefault();
+      triggerSkipFeedback('left', -10);
+    } else if (e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      triggerSkipFeedback('right', 10);
+    } else if (e.key === 'f' || e.key === 'F') {
+      e.preventDefault();
+      togglePlayerFullscreen();
+    } else if (e.key === 't' || e.key === 'T') {
+      e.preventDefault();
+      if (els.toolbarTheaterBtn) els.toolbarTheaterBtn.click();
+    }
+  });
+})();
 
 // Fast O(N) 4CC byte finder without String.fromCharCode spread (fixes call-stack crash & main-thread lag)
 function findBoxFourCC(bytes, c0, c1, c2, c3) {
@@ -1365,25 +1663,23 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
     // ── Switch Player Engine Ala jkt48.preset.id ──
     const updateSwitchEngineLabel = () => {
       let lbl = 'Switch Player';
-      if (state.playerEngine === 'cinema') lbl = 'Player: MP4 Direct';
-      else if (state.playerEngine === 'official') lbl = 'Player: Web Resmi';
-      else if (state.playerEngine === 'youtube') lbl = 'Player: YouTube Full';
+      if (state.playerEngine === 'youtube') lbl = 'Player: YouTube Full';
+      else if (state.playerEngine === 'mp4') lbl = 'Player: MP4 Direct';
       else if (state.playerEngine === 'hls') lbl = 'Player: HLS.js';
+      else if (state.playerEngine === 'official') lbl = 'Player: Web Resmi';
       if (els.playerPrefLabel) els.playerPrefLabel.textContent = lbl;
       if (els.switchPlayerEngineBtn) els.switchPlayerEngineBtn.textContent = '🔄 ' + lbl;
     };
-    updateSwitchEngineLabel();
 
     const cyclePlayerEngine = () => {
-      if (state.playerEngine === 'cinema') {
-        state.playerEngine = 'official';
-      } else if (state.playerEngine === 'official') {
-        if (d.youtubeId) state.playerEngine = 'youtube';
-        else state.playerEngine = 'hls';
-      } else if (state.playerEngine === 'youtube') {
+      if (state.playerEngine === 'youtube') {
+        state.playerEngine = 'mp4';
+      } else if (state.playerEngine === 'mp4') {
         state.playerEngine = 'hls';
+      } else if (state.playerEngine === 'hls') {
+        state.playerEngine = 'official';
       } else {
-        state.playerEngine = 'cinema';
+        state.playerEngine = d.youtubeId ? 'youtube' : 'mp4';
       }
       updateSwitchEngineLabel();
       showToast(`Beralih ke: ${els.playerPrefLabel ? els.playerPrefLabel.textContent : state.playerEngine}`);
@@ -1520,32 +1816,22 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         state.hlsInstance = null;
       }
 
-      if (state.playerEngine === 'youtube' && d.youtubeId) {
-        setVideoLoading('');
-        els.hlsPlayer.pause();
-        els.hlsPlayer.classList.add('hidden');
-        els.ytPlayer.classList.remove('hidden');
-        els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&rel=0`;
-        return;
-      }
+      const rawMp4 = chosen?.mp4Url
+        ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
+        : chosen?.url
+          ? normalizeMediaUrlClient(chosen.url) + '?v=2'
+          : '';
+      const partM3u8 = chosen?.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
 
-      if (state.playerEngine === 'official' && playerUrl) {
-        setVideoLoading('');
-        els.hlsPlayer.pause();
-        els.hlsPlayer.classList.add('hidden');
-        els.ytPlayer.classList.remove('hidden');
-        els.ytPlayer.src = playerUrl;
-        return;
+      // Reset DOM state of all player hosts
+      if (els.vidstackHost) {
+        els.vidstackHost.innerHTML = '';
+        els.vidstackHost.classList.add('hidden');
       }
-
       els.ytPlayer.classList.add('hidden');
       els.ytPlayer.src = 'about:blank';
-      els.hlsPlayer.classList.remove('hidden');
-
-      if (state.playerEngine === 'hls' && partM3u8) {
-        attachHlsOrMp4ToVideo(partM3u8, { onFatalError: fallbackToOfficial });
-        return;
-      }
+      els.hlsPlayer.classList.add('hidden');
+      setVideoLoading('');
 
       els.hlsPlayer.onended = () => {
         if (state.currentPartIdx + 1 < recs.length) {
@@ -1554,46 +1840,96 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         }
       };
 
-      const rawMp4 = chosen.mp4Url
-        ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
-        : chosen.url
-          ? normalizeMediaUrlClient(chosen.url) + '?v=2'
-          : '';
-      const partM3u8 = chosen.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
-
       const fallbackToOfficial = () => {
         if (playerUrl) {
           setVideoLoading('');
           state.playerEngine = 'official';
           updateSwitchEngineLabel();
           els.hlsPlayer.classList.add('hidden');
+          if (els.vidstackHost) els.vidstackHost.classList.add('hidden');
           els.ytPlayer.classList.remove('hidden');
           els.ytPlayer.src = playerUrl;
         }
       };
 
-      // Priority 1: Direct native MP4 playback from Cloudflare R2 (full duration, instant seek, 0% CPU lag)
-      if (rawMp4) {
+      // Engine 1: YouTube Full Archive (Vidstack / YouTube Embed)
+      if (state.playerEngine === 'youtube' && d.youtubeId) {
+        if (window.customElements && customElements.get('media-player') && els.vidstackHost) {
+          els.vidstackHost.classList.remove('hidden');
+          ensureVidstackPlayer(`youtube/${d.youtubeId}`, d.title);
+        } else {
+          els.ytPlayer.classList.remove('hidden');
+          els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&enablejsapi=1&rel=0`;
+        }
+        return;
+      }
+
+      // Engine 2: Official Web Player (iframe)
+      if (state.playerEngine === 'official' && playerUrl) {
+        els.ytPlayer.classList.remove('hidden');
+        els.ytPlayer.src = playerUrl;
+        return;
+      }
+
+      // Engine 3: Native MP4 Direct (Cloudflare R2 with HTTP 206 Byte Ranges)
+      if (state.playerEngine === 'mp4' && rawMp4) {
+        els.hlsPlayer.classList.remove('hidden');
         attachHlsOrMp4ToVideo(rawMp4, {
           onFatalError: () => {
             if (partM3u8) {
-              attachHlsOrMp4ToVideo(partM3u8, { onFatalError: fallbackToOfficial });
-            } else {
-              fallbackToOfficial();
+              state.playerEngine = 'hls';
+              updateSwitchEngineLabel();
+              playPart(idx);
+            } else if (playerUrl) {
+              state.playerEngine = 'official';
+              updateSwitchEngineLabel();
+              playPart(idx);
             }
           }
         });
         return;
       }
 
-      // Priority 2: Direct HLS m3u8
+      // Engine 4: HLS.js Stream (Adaptive bitrate)
       if (partM3u8) {
-        attachHlsOrMp4ToVideo(partM3u8, { onFatalError: fallbackToOfficial });
+        els.hlsPlayer.classList.remove('hidden');
+        attachHlsOrMp4ToVideo(partM3u8, {
+          onFatalError: () => {
+            if (playerUrl) {
+              state.playerEngine = 'official';
+              updateSwitchEngineLabel();
+              playPart(idx);
+            }
+          }
+        });
+        return;
+      }
+
+      // Fallback
+      if (d.youtubeId) {
+        state.playerEngine = 'youtube';
+        updateSwitchEngineLabel();
+        playPart(idx);
         return;
       }
 
       fallbackToOfficial();
     }
+
+    // Heuristic: If recording is partial or duration < 20 mins while live was longer, default to YouTube Full
+    const isPartialRecording = recs.some(r => r.partial) ||
+      (d.durationSeconds > 1200 && recs[0]?.durationSeconds > 0 && recs[0].durationSeconds < 1200);
+
+    if (d.youtubeId && (isPartialRecording || recs.length === 0)) {
+      state.playerEngine = 'youtube';
+    } else if (recs[0]?.mp4Url) {
+      state.playerEngine = 'mp4';
+    } else if (d.youtubeId) {
+      state.playerEngine = 'youtube';
+    } else {
+      state.playerEngine = 'hls';
+    }
+    updateSwitchEngineLabel();
 
     playPart(0);
 

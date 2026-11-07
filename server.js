@@ -622,6 +622,59 @@ async function getJkcReplays({ page = 1, perpage = 24, platform = 'ALL', member 
   };
 }
 
+// ============================================================================
+// PRESET.ID ARCHIVE CATALOG INTEGRATION (FULL UNCUT YOUTUBE REPLAYS)
+// ============================================================================
+let presetCache = { at: 0, items: [], map: {} };
+
+async function fetchPresetCatalog() {
+  const now = Date.now();
+  if (presetCache.items.length > 0 && now - presetCache.at < 3600000) {
+    return presetCache;
+  }
+  try {
+    const fetchHeaders = {
+      'User-Agent': USER_AGENT,
+      'Referer': 'https://jkt48.preset.id/',
+      'Accept': 'application/json, text/plain, */*'
+    };
+    const [liteRes, mapRes] = await Promise.all([
+      fetch('https://jkt48.preset.id/data/videos.lite.json', { headers: fetchHeaders }),
+      fetch('https://jkt48.preset.id/data/external_play_map.json', { headers: fetchHeaders })
+    ]);
+    if (liteRes.ok && mapRes.ok) {
+      const [liteData, mapData] = await Promise.all([liteRes.json(), mapRes.json()]);
+      presetCache = {
+        at: now,
+        items: Array.isArray(liteData) ? liteData : Object.values(liteData),
+        map: mapData.map || mapData || {}
+      };
+    }
+  } catch (err) {
+    // Graceful fallback
+  }
+  return presetCache;
+}
+
+function matchPresetYoutubeId(catalog, nickname, startedAt) {
+  if (!catalog || !catalog.items || !nickname || !startedAt) return null;
+  const targetMs = Date.parse(startedAt);
+  if (!targetMs || Number.isNaN(targetMs)) return null;
+
+  const nickLower = String(nickname).toLowerCase().trim();
+  const match = catalog.items.find(item => {
+    if (!item || !item.m) return false;
+    if (item.m.toLowerCase().trim() !== nickLower) return false;
+    const itemMs = Date.parse(item.d);
+    return Math.abs(itemMs - targetMs) < 6 * 3600 * 1000;
+  });
+
+  if (match) {
+    return catalog.map[match.i] || match.i || null;
+  }
+  return null;
+}
+
 async function getJkcReplayDetail(dataId, force = false) {
   const res = await fetchJkt48Connect(`/api/recent/${encodeURIComponent(dataId)}`, {}, 30000, force);
   if (!res.ok || !res.body) {
@@ -632,6 +685,18 @@ async function getJkcReplayDetail(dataId, force = false) {
     ...d,
     member: d.member || d.room_info
   });
+
+  // Enrich with Preset YouTube Full Archive if missing
+  if (!base.youtubeId) {
+    try {
+      const catalog = await fetchPresetCatalog();
+      const matchedYtId = matchPresetYoutubeId(catalog, base.nickname, base.startedAt);
+      if (matchedYtId) {
+        base.youtubeId = matchedYtId;
+        base.youtubeUrl = `https://www.youtube.com/watch?v=${matchedYtId}`;
+      }
+    } catch {}
+  }
 
   const recordings = (d.recordings || []).map((r, idx) => ({
     part: idx + 1,
