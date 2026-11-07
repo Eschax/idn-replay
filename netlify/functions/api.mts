@@ -2,6 +2,12 @@ import { EventEmitter } from "node:events";
 import handleRequest from "../../server.js";
 
 export default async (req: Request): Promise<Response> => {
+  const netlifyKey =
+    typeof Netlify !== "undefined" && Netlify.env ? Netlify.env.get("JKT48CONNECT_API_KEY") : "";
+  if (netlifyKey) {
+    process.env.JKT48CONNECT_API_KEY = netlifyKey;
+  }
+
   const url = new URL(req.url);
   const bodyText = req.method === "GET" || req.method === "HEAD" ? "" : await req.text();
 

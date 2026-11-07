@@ -80,3 +80,4 @@ function invoke(method, url, bodyObj) {
 
   console.log('ALL TESTS PASSED');
 })();
+

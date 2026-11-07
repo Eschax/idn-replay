@@ -24,7 +24,7 @@ const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const JKT48CONNECT_BASE = 'https://api.jkt48connect.app';
 const DEFAULT_JKC_API_KEY =
-  process.env.JKT48CONNECT_API_KEY || '';
+  process.env.JKT48CONNECT_API_KEY || 'jkc_82a84efebf4b67b73fa0c20b7096ea8de1e336c8';
 
 // ============================================================================
 // 1. STATE & PERSISTENCE
@@ -153,8 +153,11 @@ async function fetchJkt48Connect(endpointPath, searchParams = {}, ttlMs = 20000,
     Accept: 'application/json',
     'X-API-Key': apiKey
   };
+  if (apiKey) {
+    url.searchParams.set('api_key', apiKey);
+  }
 
-  const res = await fetch(cacheKey, {
+  const res = await fetch(url.toString(), {
     headers,
     signal: AbortSignal.timeout(14000)
   });
