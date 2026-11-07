@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JKT48 Replay & DVR Studio — Tanpa Jeda 72 Jam</title>
+  <title>JKT48 Replay & DVR Studio — Powered by JKT48Connect</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -17,19 +17,15 @@
       <div class="brand" id="brandHome">
         <div class="brand-badge">48</div>
         <div>
-          <div class="brand-title">JKT48 Replay <span class="accent-tag">HYBRID</span></div>
-          <div class="brand-sub">IDN Live &amp; Showroom • Video + Replay Komentar</div>
+          <div class="brand-title">JKT48 Replay <span class="accent-tag">JKT48CONNECT</span></div>
+          <div class="brand-sub">IDN Live &amp; Showroom • Replay R2, Komentar, Gift &amp; Auto-DVR</div>
         </div>
       </div>
 
       <nav class="nav-tabs">
         <button class="nav-tab active" data-tab="replays">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-          <span>Replay Instan</span>
-        </button>
-        <button class="nav-tab" data-tab="jkt48connect">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
-          <span>Rekap JKT48Connect</span>
+          <span>Replay Live</span>
         </button>
         <button class="nav-tab" data-tab="live">
           <span class="live-dot-pulse"></span>
@@ -46,7 +42,7 @@
       <div class="search-actions">
         <form id="searchForm" class="search-box">
           <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-          <input type="text" id="searchInput" placeholder="Cari member, tanggal, collab..." autocomplete="off" />
+          <input type="text" id="searchInput" placeholder="Cari member atau judul live..." autocomplete="off" />
           <button type="button" id="clearSearchBtn" class="clear-btn hidden" title="Hapus pencarian">&times;</button>
         </form>
         <button id="refreshBtn" class="icon-btn" title="Muat Ulang Data Terbaru">
@@ -57,7 +53,7 @@
   </header>
 
   <main class="container">
-    <!-- Built-in Cinema Player + Synchronized Comment Replay Dock -->
+    <!-- Built-in Cinema Player + 3-in-1 Side Panel (Chat, Gift/Fans, Screenshots) -->
     <section id="playerSection" class="player-section hidden">
       <div class="player-card">
         <div class="player-header">
@@ -68,12 +64,12 @@
           <div class="player-controls-top">
             <select id="playerPartSelect" class="quality-select hidden" title="Pilih Bagian Video"></select>
             <select id="playerQualitySelect" class="quality-select hidden" title="Pilih Kualitas"></select>
-            <button id="toggleChatPanelBtn" class="btn-action subtle">💬 Komentar</button>
+            <button id="toggleChatPanelBtn" class="btn-action subtle">Panel Samping</button>
             <button id="playerRecordBtn" class="btn-action record hidden">
               <span class="rec-dot"></span> Rekam + Chat
             </button>
-            <a id="playerExternalLink" href="#" target="_blank" rel="noopener" class="btn-action subtle">
-              Buka Sumber ↗
+            <a id="playerDownloadMp4Btn" href="#" target="_blank" rel="noopener" class="btn-action subtle hidden">
+              ⬇ MP4
             </a>
             <button id="closePlayerBtn" class="btn-close-player" title="Tutup Player">&times;</button>
           </div>
@@ -90,16 +86,36 @@
             <video id="hlsPlayer" class="video-frame hidden" controls playsinline></video>
           </div>
 
-          <!-- Side Panel: Live Chat & Synchronized Replay Comments -->
+          <!-- Side Panel: Komentar, Top Gifter & Gift, Screenshot -->
           <aside class="chat-panel" id="chatPanel">
-            <div class="chat-panel-header">
-              <div>
-                <strong id="chatPanelTitle">💬 Replay &amp; Live Komentar</strong>
-                <div class="chat-panel-sub" id="chatPanelSub">Memuat komentar...</div>
-              </div>
-              <button id="refreshCommentsBtn" class="icon-btn" style="width:30px;height:30px" title="Muat Ulang Komentar">↻</button>
+            <div class="side-subtabs">
+              <button class="side-subtab active" data-sidetab="comments">💬 Komentar</button>
+              <button class="side-subtab" data-sidetab="gifts">🎁 Gift &amp; Fans</button>
+              <button class="side-subtab" data-sidetab="screenshots">📸 Foto &amp; Rekap</button>
             </div>
-            <div class="chat-messages" id="chatMessagesList"></div>
+
+            <!-- Subtab 1: Comments -->
+            <div id="sidePanel-comments" class="side-subpanel active">
+              <div class="chat-panel-header">
+                <div class="chat-panel-sub" id="chatPanelSub">Memuat komentar sesi...</div>
+                <button id="refreshCommentsBtn" class="icon-btn" style="width:28px;height:28px" title="Muat Ulang Komentar">↻</button>
+              </div>
+              <div class="chat-messages" id="chatMessagesList"></div>
+            </div>
+
+            <!-- Subtab 2: Top Gifter & Gifts -->
+            <div id="sidePanel-gifts" class="side-subpanel hidden">
+              <div class="chat-messages" id="sideGiftsContent">
+                <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat daftar Top Gifter &amp; Gift.</div>
+              </div>
+            </div>
+
+            <!-- Subtab 3: Screenshots & Leaderboard -->
+            <div id="sidePanel-screenshots" class="side-subpanel hidden">
+              <div class="chat-messages" id="sideScreenshotsContent">
+                <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat Screenshot &amp; Kartu Leaderboard.</div>
+              </div>
+            </div>
           </aside>
         </div>
 
@@ -110,11 +126,11 @@
     <!-- Live Alert Banner -->
     <section id="liveMiniBanner" class="live-mini-banner hidden"></section>
 
-    <!-- ==================== TAB 1: REPLAY INSTAN ==================== -->
+    <!-- ==================== TAB 1: REPLAY LIVE (100% JKT48CONNECT) ==================== -->
     <section id="tab-replays" class="tab-panel active">
       <div class="member-bar-wrap">
         <div class="member-bar-header">
-          <span class="section-label">Filter Cepat Member JKT48</span>
+          <span class="section-label">Filter Member JKT48 <small>(⭐ = Oshi Auto-Record)</small></span>
           <button id="resetMemberBtn" class="text-btn hidden">Reset Filter Member</button>
         </div>
         <div class="member-chips" id="memberChipsContainer"></div>
@@ -132,52 +148,20 @@
         </div>
 
         <div class="toolbar-right">
-          <label class="toggle-switch">
-            <input type="checkbox" id="fullOnlyToggle" checked />
-            <span>Hanya Full Replay (&ge; 5 Menit)</span>
-          </label>
+          <span class="result-counter" id="jkcQuotaBadge">API Aktif</span>
           <span class="result-counter" id="replayResultCounter">Memuat...</span>
         </div>
       </div>
 
       <div id="replaysGrid" class="video-grid"></div>
-    </section>
 
-    <!-- ==================== TAB 2: REKAP & REPLAY JKT48CONNECT ==================== -->
-    <section id="tab-jkt48connect" class="tab-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>Rekap Live, Gift, Screenshot &amp; Unlisted Replay (JKT48Connect API)</h2>
-          <p>Terintegrasi dengan dokumentasi <code>api.jkt48connect.app</code>: akses <code>/api/recent</code>, stream HLS &amp; Unlisted YouTube (tanpa tunggu 72 jam), rincian gift/gold, dan screenshot sesi.</p>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input
-            type="password"
-            id="jkcApiKeyInput"
-            class="api-key-input"
-            placeholder="Masukkan API Key jkc_... (Gratis)"
-          />
-          <button id="saveJkcKeyBtn" class="btn-action">Simpan API Key</button>
-          <a href="https://api.jkt48connect.app/dashboard/keys" target="_blank" rel="noopener" class="btn-action subtle">Ambil Key Gratis ↗</a>
-        </div>
-      </div>
-
-      <div id="jkcQuotaBanner" class="jkc-quota-banner hidden"></div>
-      <div id="jkcRecentGrid" class="video-grid"></div>
-
-      <!-- Modal Detail Recent (Gift, Leaderboard, Screenshot) -->
-      <div id="recentDetailModal" class="modal-backdrop hidden">
-        <div class="modal-card">
-          <div class="modal-header">
-            <h3 id="modalRecentTitle">Detail Sesi Live</h3>
-            <button id="closeRecentModalBtn" class="btn-close-player">&times;</button>
-          </div>
-          <div id="modalRecentBody" class="modal-body"></div>
-        </div>
+      <div style="display:flex;justify-content:center;gap:12px;margin-top:26px">
+        <button id="prevPageBtn" class="btn-action subtle hidden">&larr; Halaman Sebelumnya</button>
+        <button id="nextPageBtn" class="btn-action subtle hidden">Halaman Berikutnya &rarr;</button>
       </div>
     </section>
 
-    <!-- ==================== TAB 3: SEDANG LIVE ==================== -->
+    <!-- ==================== TAB 2: SEDANG LIVE ==================== -->
     <section id="tab-live" class="tab-panel">
       <div class="panel-heading">
         <div>
@@ -190,7 +174,7 @@
       <div id="liveGrid" class="video-grid"></div>
     </section>
 
-    <!-- ==================== TAB 4: DVR & AUTO-RECORD ==================== -->
+    <!-- ==================== TAB 3: DVR & AUTO-RECORD ==================== -->
     <section id="tab-recordings" class="tab-panel">
       <div class="dvr-layout">
         <div class="dvr-main">
@@ -204,11 +188,20 @@
         </div>
 
         <aside class="dvr-sidebar">
+          <div class="oshi-card" style="margin-bottom:16px">
+            <h3 style="font-size:14.5px;margin-bottom:6px">🔑 API Key JKT48Connect</h3>
+            <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Digunakan untuk mengambil daftar Replay R2, Detail Gift, Screenshot, dan Komentar IDN/Showroom.</p>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="jkcApiKeyInput" class="api-key-input" style="flex:1;width:auto" placeholder="jkc_..." />
+              <button id="saveJkcKeyBtn" class="btn-action">Simpan</button>
+            </div>
+          </div>
+
           <div class="oshi-card">
             <div class="oshi-card-header">
               <div>
                 <h3>Pengaturan Perekam Otomatis (Auto-Record)</h3>
-                <p>Tidak perlu klik rekam manual! Sistem memantau setiap 45 detik dan otomatis merekam begitu member mulai live.</p>
+                <p>Sistem memantau setiap 45 detik dan otomatis merekam begitu member mulai live.</p>
               </div>
               <label class="toggle-switch">
                 <input type="checkbox" id="autoRecordToggle" checked />
@@ -216,7 +209,6 @@
               </label>
             </div>
 
-            <!-- Pilihan Mode Auto-Record: Semua Member vs Hanya Oshi -->
             <div class="auto-mode-box">
               <label class="radio-card">
                 <input type="radio" name="autoRecordMode" value="all" id="modeAllRadio" />

@@ -21,9 +21,11 @@ const RECORDINGS_META_FILE = path.join(DATA_DIR, 'recordings.json');
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const JKT48CONNECT_BASE = 'https://api.jkt48connect.app';
+const DEFAULT_JKC_API_KEY =
+  process.env.JKT48CONNECT_API_KEY || 'jkc_82a84efebf4b67b73fa0c20b7096ea8de1e336c8';
 
 // ============================================================================
-// 1. STATE & PERSISTENCE (AUTO-RECORD, JKT48CONNECT API KEY, LOCAL RECORDINGS)
+// 1. STATE & PERSISTENCE
 // ============================================================================
 function loadJson(filePath, fallback) {
   try {
@@ -46,32 +48,56 @@ function saveJson(filePath, data) {
 
 let appConfig = loadJson(OSHI_CONFIG_FILE, {
   autoRecordEnabled: true,
-  autoRecordMode: 'oshi', // 'all' (semua member) atau 'oshi' (hanya yang dipilih)
-  oshiList: [],
-  jkt48ConnectApiKey: process.env.JKT48CONNECT_API_KEY || ''
+  autoRecordMode: 'oshi',
+  oshiList: ['Aralie', 'Delynn', 'Erine', 'Lily', 'Michie', 'Trisha'],
+  jkt48ConnectApiKey: DEFAULT_JKC_API_KEY
 });
 
-if (!appConfig.autoRecordMode) appConfig.autoRecordMode = 'oshi';
-if (process.env.JKT48CONNECT_API_KEY && !appConfig.jkt48ConnectApiKey) {
-  appConfig.jkt48ConnectApiKey = process.env.JKT48CONNECT_API_KEY;
+if (!appConfig.jkt48ConnectApiKey) {
+  appConfig.jkt48ConnectApiKey = DEFAULT_JKC_API_KEY;
 }
+if (!appConfig.autoRecordMode) {
+  appConfig.autoRecordMode = 'oshi';
+}
+saveJson(OSHI_CONFIG_FILE, appConfig);
 
 let recordingsMeta = loadJson(RECORDINGS_META_FILE, []);
 const activeRecorders = new Map();
+const finishedStreamUrls = new Set();
 
-for (const rec of recordingsMeta) {
+// Bersihkan rekaman kosong (0 segmen) dan tandai yang masih menggantung sebagai completed
+recordingsMeta = recordingsMeta.filter(rec => {
+  if (!rec.segmentCount || rec.segmentCount <= 0) {
+    try {
+      const f = path.join(RECORDINGS_DIR, rec.id);
+      if (fs.existsSync(f)) fs.rmSync(f, { recursive: true, force: true });
+    } catch {}
+    return false;
+  }
   if (rec.status === 'recording') {
     rec.status = 'completed';
     rec.endedAt = rec.endedAt || new Date().toISOString();
   }
-}
+  return true;
+});
 saveJson(RECORDINGS_META_FILE, recordingsMeta);
 
 function getApiKey() {
-  return (appConfig.jkt48ConnectApiKey || process.env.JKT48CONNECT_API_KEY || '').trim();
+  return (appConfig.jkt48ConnectApiKey || DEFAULT_JKC_API_KEY).trim();
 }
 
-async function fetchJkt48Connect(endpointPath, searchParams = {}) {
+function normalizeMediaUrl(url) {
+  if (!url) return '';
+  return String(url).replace('https://api.jkt48connect.app:8443/', 'https://api.jkt48connect.app/');
+}
+
+// ============================================================================
+// 2. JKT48CONNECT API CLIENT (WITH SHORT CACHE TO SAVE QUOTA)
+// ============================================================================
+const apiCache = new Map();
+let lastQuotaInfo = { limit: null, remaining: null, period: null };
+
+async function fetchJkt48Connect(endpointPath, searchParams = {}, ttlMs = 20000, force = false) {
   const apiKey = getApiKey();
   const url = new URL(endpointPath, JKT48CONNECT_BASE);
   for (const [k, v] of Object.entries(searchParams)) {
@@ -79,22 +105,33 @@ async function fetchJkt48Connect(endpointPath, searchParams = {}) {
       url.searchParams.set(k, String(v));
     }
   }
+  const cacheKey = url.toString();
+  const now = Date.now();
+  if (!force && ttlMs > 0 && apiCache.has(cacheKey)) {
+    const cached = apiCache.get(cacheKey);
+    if (now - cached.at < ttlMs) {
+      return cached.result;
+    }
+  }
+
   const headers = {
     'User-Agent': USER_AGENT,
-    Accept: 'application/json'
+    Accept: 'application/json',
+    'X-API-Key': apiKey
   };
-  if (apiKey) {
-    headers['X-API-Key'] = apiKey;
-  }
-  const res = await fetch(url.toString(), {
+
+  const res = await fetch(cacheKey, {
     headers,
-    signal: AbortSignal.timeout(12000)
+    signal: AbortSignal.timeout(14000)
   });
-  const quota = {
-    limit: res.headers.get('x-ratelimit-limit'),
-    remaining: res.headers.get('x-ratelimit-remaining'),
-    period: res.headers.get('x-quota-period')
-  };
+
+  const limit = res.headers.get('x-ratelimit-limit');
+  const remaining = res.headers.get('x-ratelimit-remaining');
+  const period = res.headers.get('x-quota-period');
+  if (limit) {
+    lastQuotaInfo = { limit, remaining, period };
+  }
+
   const text = await res.text();
   let body = null;
   try {
@@ -102,61 +139,23 @@ async function fetchJkt48Connect(endpointPath, searchParams = {}) {
   } catch {
     body = { raw: text };
   }
-  return { ok: res.ok, status: res.status, body, quota };
+
+  const result = {
+    ok: res.ok,
+    status: res.status,
+    body,
+    quota: lastQuotaInfo
+  };
+
+  if (res.ok && ttlMs > 0) {
+    apiCache.set(cacheKey, { at: now, result });
+  }
+  return result;
 }
 
 // ============================================================================
-// 2. JKT48 MEMBER DIRECTORY & MATCHER
+// 3. MEMBERS DIRECTORY (FROM JKT48CONNECT /api/member)
 // ============================================================================
-const FALLBACK_MEMBERS = [
-  { name: 'Abigail Rachel', nicknames: ['Aralie'], generation: 'gen12', is_graduate: false },
-  { name: 'Adeline Wijaya', nicknames: ['Delynn'], generation: 'gen12', is_graduate: false },
-  { name: 'Amanda Sukma', nicknames: ['Amanda'], generation: 'gen10', is_graduate: false },
-  { name: 'Angelina Christy', nicknames: ['Christy'], generation: 'gen7', is_graduate: false },
-  { name: 'Aurellia', nicknames: ['Lia'], generation: 'gen10', is_graduate: false },
-  { name: 'Aurhel Alana', nicknames: ['Lana'], generation: 'gen12', is_graduate: false },
-  { name: 'Catherina Vallencia', nicknames: ['Erine'], generation: 'gen12', is_graduate: false },
-  { name: 'Cathleen Nixie', nicknames: ['Cathy'], generation: 'gen11', is_graduate: false },
-  { name: 'Celline Thefani', nicknames: ['Elin'], generation: 'gen11', is_graduate: false },
-  { name: 'Chelsea Davina', nicknames: ['Chelsea'], generation: 'gen11', is_graduate: false },
-  { name: 'Cornelia Vanisa', nicknames: ['Oniel'], generation: 'gen8', is_graduate: false },
-  { name: 'Cynthia Yaputera', nicknames: ['Cynthia'], generation: 'gen11', is_graduate: false },
-  { name: 'Dena Natalia', nicknames: ['Danella'], generation: 'gen11', is_graduate: false },
-  { name: 'Desy Natalia', nicknames: ['Daisy'], generation: 'gen11', is_graduate: false },
-  { name: 'Febriola Sinambela', nicknames: ['Olla'], generation: 'gen7', is_graduate: false },
-  { name: 'Feni Fitriyanti', nicknames: ['Feni'], generation: 'gen3', is_graduate: false },
-  { name: 'Fiony Alveria', nicknames: ['Fiony'], generation: 'gen8', is_graduate: false },
-  { name: 'Freyanashifa Jayawardana', nicknames: ['Freya'], generation: 'gen7', is_graduate: false },
-  { name: 'Fritzy Rosmerian', nicknames: ['Fritzy'], generation: 'gen12', is_graduate: false },
-  { name: 'Gabriela Abigail', nicknames: ['Ella'], generation: 'gen10', is_graduate: false },
-  { name: 'Gendis Mayrannisa', nicknames: ['Gendis'], generation: 'gen11', is_graduate: false },
-  { name: 'Gita Sekar Andarini', nicknames: ['Gita'], generation: 'gen6', is_graduate: false },
-  { name: 'Grace Octaviani', nicknames: ['Gracie'], generation: 'gen11', is_graduate: false },
-  { name: 'Greesella Adhalia', nicknames: ['Greesel'], generation: 'gen11', is_graduate: false },
-  { name: 'Helisma Putri', nicknames: ['Eli'], generation: 'gen7', is_graduate: false },
-  { name: 'Hillary Abigail', nicknames: ['Lily'], generation: 'gen12', is_graduate: false },
-  { name: 'Indah Cahya', nicknames: ['Indah'], generation: 'gen9', is_graduate: false },
-  { name: 'Indira Seruni', nicknames: ['Indira'], generation: 'gen10', is_graduate: false },
-  { name: 'Jazzlyn Trisha', nicknames: ['Trisha'], generation: 'gen12', is_graduate: false },
-  { name: 'Jessica Chandra', nicknames: ['Jessi'], generation: 'gen7', is_graduate: false },
-  { name: 'Jesslyn Elly', nicknames: ['Lyn'], generation: 'gen10', is_graduate: false },
-  { name: 'Kathrina Irene', nicknames: ['Kathrina'], generation: 'gen9', is_graduate: false },
-  { name: 'Letycia Moreen', nicknames: ['Moreen'], generation: 'gen12', is_graduate: false },
-  { name: 'Lulu Salsabila', nicknames: ['Lulu'], generation: 'gen8', is_graduate: false },
-  { name: 'Marsha Lenathea', nicknames: ['Marsha'], generation: 'gen9', is_graduate: false },
-  { name: 'Michelle Alexandra', nicknames: ['Michie'], generation: 'gen11', is_graduate: false },
-  { name: 'Michelle Levia', nicknames: ['Levi'], generation: 'gen12', is_graduate: false },
-  { name: 'Mutiara Azzahra', nicknames: ['Muthe'], generation: 'gen7', is_graduate: false },
-  { name: 'Nayla Suji', nicknames: ['Nayla'], generation: 'gen12', is_graduate: false },
-  { name: 'Nina Tutachia', nicknames: ['Nachia'], generation: 'gen12', is_graduate: false },
-  { name: 'Oline Manuel', nicknames: ['Oline'], generation: 'gen12', is_graduate: false },
-  { name: 'Raisha Syifa', nicknames: ['Raisha'], generation: 'gen10', is_graduate: false },
-  { name: 'Ribka Budiman', nicknames: ['Ribka'], generation: 'gen12', is_graduate: false },
-  { name: 'Shabilqis Naila', nicknames: ['Nala'], generation: 'gen12', is_graduate: false },
-  { name: 'Shania Gracia', nicknames: ['Gracia'], generation: 'gen3', is_graduate: false },
-  { name: 'Victoria Kimberly', nicknames: ['Kimmy'], generation: 'gen12', is_graduate: false }
-];
-
 let membersCache = { data: null, updatedAt: 0 };
 
 async function getMembers() {
@@ -165,67 +164,35 @@ async function getMembers() {
     return membersCache.data;
   }
   try {
-    const headers = { 'User-Agent': USER_AGENT };
-    if (getApiKey()) headers['X-API-Key'] = getApiKey();
-    const res = await fetch('https://api.crstlnz.my.id/api/member?group=jkt48', {
-      headers,
-      signal: AbortSignal.timeout(8000)
-    });
-    if (res.ok) {
-      const raw = await res.json();
-      if (Array.isArray(raw) && raw.length > 0) {
-        const active = raw
-          .filter(m => !m.is_graduate && m.group === 'jkt48')
-          .map(m => ({
-            id: m._id || m.url,
-            name: m.name,
-            nicknames: m.nicknames?.length ? m.nicknames : [m.name.split(' ')[0]],
-            img: m.img_alt || m.img || '',
-            url: m.url || '',
-            generation: m.generation || ''
-          }))
-          .sort((a, b) => (a.nicknames[0] || a.name).localeCompare(b.nicknames[0] || b.name));
-        membersCache = { data: active, updatedAt: now };
-        return active;
-      }
+    const res = await fetchJkt48Connect('/api/member', { group: 'jkt48' }, 1800000);
+    const raw = Array.isArray(res.body) ? res.body : res.body?.members || [];
+    if (Array.isArray(raw) && raw.length > 0) {
+      const active = raw
+        .filter(m => !m.is_graduate && (!m.group || m.group === 'jkt48'))
+        .map(m => ({
+          id: m._id || m.url || m.name,
+          name: m.name,
+          nicknames: m.nicknames?.length
+            ? m.nicknames
+            : m.nickname
+              ? [m.nickname]
+              : [m.name.split(' ')[0]],
+          img: normalizeMediaUrl(m.img_alt || m.img || ''),
+          url: m.url || '',
+          generation: m.generation || ''
+        }))
+        .sort((a, b) => (a.nicknames[0] || a.name).localeCompare(b.nicknames[0] || b.name));
+      membersCache = { data: active, updatedAt: now };
+      return active;
     }
   } catch (err) {
-    console.warn('[WARN] Menggunakan fallback daftar member:', err.message);
+    console.warn('[WARN] Gagal mengambil member dari JKT48Connect:', err.message);
   }
-  const fallbackFormatted = FALLBACK_MEMBERS.map(m => ({
-    id: m.nicknames[0].toLowerCase(),
-    name: m.name,
-    nicknames: m.nicknames,
-    img: '',
-    url: m.nicknames[0].toLowerCase(),
-    generation: m.generation
-  }));
-  membersCache = { data: fallbackFormatted, updatedAt: now };
-  return fallbackFormatted;
-}
-
-function detectMembersInTitle(title, members) {
-  const matched = [];
-  const lowerTitle = ` ${title.toLowerCase()} `;
-  for (const m of members) {
-    for (const nick of m.nicknames || []) {
-      if (nick.length < 3) continue;
-      const regex = new RegExp(`(^|[^a-z0-9])${nick.toLowerCase()}([^a-z0-9]|$)`, 'i');
-      if (regex.test(lowerTitle)) {
-        matched.push({
-          nickname: nick,
-          name: m.name,
-          img: m.img
-        });
-        break;
-      }
-    }
-  }
-  return matched;
+  return membersCache.data || [];
 }
 
 // ============================================================================
-// 3. NOW LIVE FETCHER (IDN LIVE & SHOWROOM + JKT48CONNECT)
+// 4. NOW LIVE (FROM JKT48CONNECT /api/now_live)
 // ============================================================================
 let nowLiveCache = { data: [], updatedAt: 0 };
 
@@ -235,67 +202,40 @@ async function getNowLive(force = false) {
     return nowLiveCache.data;
   }
   try {
-    const headers = { 'User-Agent': USER_AGENT };
-    if (getApiKey()) headers['X-API-Key'] = getApiKey();
-
-    // Coba ambil juga notification_data_id dari JKT48Connect jika API Key tersedia
-    let notifMap = new Map();
-    if (getApiKey()) {
-      try {
-        const notifRes = await fetchJkt48Connect('/api/live-notifications');
-        if (notifRes.ok && Array.isArray(notifRes.body?.lives)) {
-          for (const n of notifRes.body.lives) {
-            if (n.room_id) notifMap.set(String(n.room_id), n.data_id);
-            if (n.username) notifMap.set(String(n.username).toLowerCase(), n.data_id);
-          }
-        }
-      } catch {}
-    }
-
-    const res = await fetch('https://api.crstlnz.my.id/api/now_live?group=jkt48', {
-      headers,
-      signal: AbortSignal.timeout(8000)
-    });
-    if (res.ok) {
-      const raw = await res.json();
-      if (Array.isArray(raw)) {
-        const formatted = raw.map(item => {
-          const isIdn =
-            item.type === 'idn' ||
-            (item.streaming_url_list?.[0]?.url || '').includes('live-video.net') ||
-            (item.img || '').includes('idn.app') ||
-            Boolean(item.chat_room_id);
-          const streamUrls = (item.streaming_url_list || []).map(s => ({
-            label: s.label || `${s.quality || 720}p`,
-            quality: s.quality || 720,
-            url: s.url
-          }));
-          const dataId =
-            item.data_id ||
-            item.notification_data_id ||
-            notifMap.get(String(item.room_id)) ||
-            notifMap.get(String(item.url_key || '').toLowerCase()) ||
-            '';
-          return {
-            id: `${isIdn ? 'idn' : 'sr'}_${item.room_id || item.url_key}_${item.slug || ''}`,
-            name: item.name || item.url_key || 'Member JKT48',
-            urlKey: item.url_key || '',
-            slug: item.slug || '',
-            roomId: item.room_id,
-            dataId,
-            chatRoomId: item.chat_room_id || '',
-            platform: isIdn ? 'IDN' : 'SHOWROOM',
-            img: item.img || item.img_alt || '',
-            avatar: item.img_alt || item.img || '',
-            startedAt: item.started_at,
-            streamUrls,
-            bestStreamUrl: streamUrls[0]?.url || '',
-            isRecording: isMemberCurrentlyRecording(item.url_key || item.name)
-          };
-        });
-        nowLiveCache = { data: formatted, updatedAt: now };
-        return formatted;
-      }
+    const res = await fetchJkt48Connect('/api/now_live', { group: 'jkt48' }, 15000, force);
+    const raw = Array.isArray(res.body) ? res.body : res.body?.data || [];
+    if (Array.isArray(raw)) {
+      const formatted = raw.map(item => {
+        const isIdn =
+          item.type === 'idn' ||
+          (item.streaming_url_list?.[0]?.url || '').includes('live-video.net') ||
+          (item.img || '').includes('idn.app') ||
+          Boolean(item.chat_room_id);
+        const streamUrls = (item.streaming_url_list || []).map(s => ({
+          label: s.label || `${s.quality || 720}p`,
+          quality: s.quality || 720,
+          url: s.url
+        }));
+        const dataId = item.data_id || item.notification_data_id || '';
+        return {
+          id: `${isIdn ? 'idn' : 'sr'}_${item.room_id || item.url_key}_${item.slug || ''}`,
+          name: item.name || item.url_key || 'Member JKT48',
+          urlKey: item.url_key || '',
+          slug: item.slug || '',
+          roomId: item.room_id,
+          dataId,
+          chatRoomId: item.chat_room_id || '',
+          platform: isIdn ? 'IDN' : 'SHOWROOM',
+          img: normalizeMediaUrl(item.img || item.img_alt || ''),
+          avatar: normalizeMediaUrl(item.img_alt || item.img || ''),
+          startedAt: item.started_at,
+          streamUrls,
+          bestStreamUrl: streamUrls[0]?.url || '',
+          isRecording: isMemberCurrentlyRecording(item.url_key || item.name)
+        };
+      });
+      nowLiveCache = { data: formatted, updatedAt: now };
+      return formatted;
     }
   } catch (err) {
     console.error('[ERROR] Gagal mengambil now_live:', err.message);
@@ -318,59 +258,302 @@ function isMemberCurrentlyRecording(identifier) {
 }
 
 // ============================================================================
-// 4. LIVE COMMENTS FETCHER (SHOWROOM DIRECT + JKT48CONNECT IDN/SR COMMENTS)
+// 5. JKT48CONNECT REPLAYS (/api/recent & /api/recent/:id)
 // ============================================================================
-async function fetchLiveComments({ platform, roomId, dataId, after }) {
-  const comments = [];
+function formatRecentItem(item) {
+  const isIdn = (item.type || '').toLowerCase() === 'idn' || Boolean(item.idn);
+  const memberName = item.member?.name || item.room_info?.name || 'Member JKT48';
+  const nickname =
+    item.member?.nickname || item.room_info?.nickname || memberName.split(' ')[0];
+  const avatar = normalizeMediaUrl(
+    item.member?.img_alt || item.member?.img || item.room_info?.img_alt || ''
+  );
+  const thumb = normalizeMediaUrl(
+    item.idn?.image || item.member?.img_alt || item.member?.img || ''
+  );
+  const liveTitle = item.idn?.title || `Live ${nickname} JKT48`;
+  const startDate = item.live_info?.date?.start || item.created_at || '';
+  const endDate = item.live_info?.date?.end || item.created_at || '';
+  const durMs = item.live_info?.duration || 0;
+  const durationSeconds = durMs > 10000 ? Math.round(durMs / 1000) : durMs;
+  const viewers = item.live_info?.viewers?.num || item.viewers || 0;
+  const points = item.points || item.total_gifts || 0;
+  const pointUnit = item.point_unit || (isIdn ? 'idn_gold' : 'showroom_points');
 
-  // 1. Jika JKT48Connect API Key tersedia, coba ambil dari /api/showroom-comments atau /api/idn-comments
-  if (getApiKey()) {
-    try {
-      if (platform === 'SHOWROOM' && roomId) {
-        const res = await fetchJkt48Connect(`/api/showroom-comments/${encodeURIComponent(roomId)}`, {
-          after
-        });
-        if (res.ok && Array.isArray(res.body?.comments)) {
-          return {
-            ok: true,
-            source: 'jkt48connect-showroom',
-            cursor: res.body.cursor,
-            comments: res.body.comments.map(c => ({
-              id: c.id || String(c.sequence || Math.random()),
-              user: c.user?.name || 'Penonton',
-              avatar: c.user?.avatar_url || '',
-              text: c.comment || '',
-              time: c.observed_at || new Date().toISOString(),
-              sequence: c.sequence
-            }))
-          };
-        }
-      } else if (platform === 'IDN' && dataId) {
-        const res = await fetchJkt48Connect(`/api/idn-comments/${encodeURIComponent(dataId)}`, {
-          after
-        });
-        if (res.ok && Array.isArray(res.body?.comments)) {
-          return {
-            ok: true,
-            source: 'jkt48connect-idn',
-            cursor: res.body.cursor,
-            comments: res.body.comments.map(c => ({
-              id: c.id || String(c.sequence || Math.random()),
-              user: c.user?.name || 'Penonton',
-              avatar: c.user?.avatar_url || '',
-              text: c.comment || '',
-              time: c.source_time || c.observed_at || new Date().toISOString(),
-              sequence: c.sequence
-            }))
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('[COMMENTS] Fallback dari JKT48Connect:', err.message);
-    }
+  const streamUrl = normalizeMediaUrl(
+    item.playback?.stream_url || item.recording?.stream_url || ''
+  );
+  const ytVideos = item.youtube_replay?.videos || [];
+  const playbackStatus = item.playback?.status || (streamUrl ? 'ready' : 'pending');
+  const parts = item.playback?.parts ?? (streamUrl ? 1 : 0);
+
+  return {
+    dataId: item.data_id || item._id,
+    roomId: item.room_id,
+    platform: isIdn ? 'IDN' : 'SHOWROOM',
+    memberName,
+    nickname,
+    avatar,
+    thumb,
+    title: `${nickname} JKT48 — ${liveTitle}`,
+    liveTitle,
+    startedAt: startDate,
+    endedAt: endDate,
+    durationSeconds,
+    viewers,
+    points,
+    pointUnit,
+    playbackStatus,
+    parts,
+    streamUrl,
+    youtubeId: item.playback?.youtube_id || ytVideos[0]?.youtube_id || null,
+    youtubeUrl: item.playback?.youtube_url || ytVideos[0]?.url || null,
+    leaderboardBanner: normalizeMediaUrl(
+      item.leaderboard_designs?.jkt48connect?.banner?.url ||
+        item.leaderboard_designs?.photobook?.banner?.url ||
+        ''
+    )
+  };
+}
+
+async function getJkcReplays({ page = 1, perpage = 24, platform = 'ALL', member = '', query = '', force = false }) {
+  const typeParam =
+    platform === 'IDN' ? 'idn' : platform === 'SHOWROOM' ? 'showroom' : 'all';
+
+  // Jika filter member atau query aktif, kita bisa mengambil perpage lebih besar agar hasil filter lengkap
+  const hasFilter = Boolean(member.trim() || query.trim());
+  const fetchPerpage = hasFilter ? 60 : Number(perpage) || 24;
+
+  const res = await fetchJkt48Connect(
+    '/api/recent',
+    {
+      page,
+      perpage: fetchPerpage,
+      group: 'jkt48',
+      type: typeParam,
+      sort: 'date',
+      order: '-1'
+    },
+    25000,
+    force
+  );
+
+  const rawList = Array.isArray(res.body?.recents)
+    ? res.body.recents
+    : Array.isArray(res.body)
+      ? res.body
+      : [];
+
+  let items = rawList.map(formatRecentItem);
+
+  if (member.trim()) {
+    const mLower = member.trim().toLowerCase();
+    items = items.filter(
+      it =>
+        it.nickname.toLowerCase().includes(mLower) ||
+        it.memberName.toLowerCase().includes(mLower) ||
+        it.title.toLowerCase().includes(mLower)
+    );
   }
 
-  // 2. Fallback Gratis Tanpa API Key untuk Showroom langsung dari Showroom Public API!
+  if (query.trim()) {
+    const qLower = query.trim().toLowerCase();
+    items = items.filter(
+      it =>
+        it.title.toLowerCase().includes(qLower) ||
+        it.memberName.toLowerCase().includes(qLower) ||
+        it.nickname.toLowerCase().includes(qLower) ||
+        it.dataId.toLowerCase().includes(qLower)
+    );
+  }
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    quota: res.quota,
+    page: Number(page),
+    totalCount: res.body?.total_count || items.length,
+    data: items
+  };
+}
+
+async function getJkcReplayDetail(dataId, force = false) {
+  const res = await fetchJkt48Connect(`/api/recent/${encodeURIComponent(dataId)}`, {}, 30000, force);
+  if (!res.ok || !res.body) {
+    return { ok: false, status: res.status, error: res.body?.message || 'Gagal memuat detail' };
+  }
+  const d = res.body;
+  const base = formatRecentItem({
+    ...d,
+    member: d.member || d.room_info
+  });
+
+  const recordings = (d.recordings || []).map((r, idx) => ({
+    part: idx + 1,
+    run: r.run,
+    mp4Url: normalizeMediaUrl(r.url),
+    streamUrl: normalizeMediaUrl(r.stream_url),
+    playerUrl: normalizeMediaUrl(r.player_url),
+    durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : 0,
+    sizeBytes: r.bytes || 0,
+    startedAt: r.started_at,
+    partial: r.partial
+  }));
+
+  const combinedStreamUrl = normalizeMediaUrl(
+    d.playback?.stream_url ||
+      d.recording_session?.stream_url ||
+      d.recording?.stream_url ||
+      recordings[0]?.streamUrl ||
+      ''
+  );
+
+  // Hitung ringkasan gift dari live_info.gift.list atau agregasi dari live_info.gift.log
+  let giftItems = [];
+  if (Array.isArray(d.live_info?.gift?.list) && d.live_info.gift.list.length > 0) {
+    giftItems = d.live_info.gift.list.map(g => ({
+      id: g.id || g.name,
+      name: g.name || 'Gift',
+      img: normalizeMediaUrl(g.img || ''),
+      num: g.num || 1,
+      point: g.point || 0
+    }));
+  } else if (Array.isArray(d.live_info?.gift?.log)) {
+    const giftMap = new Map();
+    for (const entry of d.live_info.gift.log) {
+      for (const g of entry.gifts || []) {
+        const key = g.id || g.name;
+        if (!giftMap.has(key)) {
+          giftMap.set(key, {
+            id: key,
+            name: g.name || 'Gift',
+            img: normalizeMediaUrl(g.img || ''),
+            num: 0,
+            point: g.point || 0
+          });
+        }
+        const cur = giftMap.get(key);
+        cur.num += g.num || 1;
+      }
+    }
+    giftItems = [...giftMap.values()].sort((a, b) => b.point * b.num - a.point * a.num);
+  }
+
+  const fans = (d.fans || d.users || []).slice(0, 30).map((f, idx) => ({
+    rank: f.rank || idx + 1,
+    id: f.id,
+    name: f.name || 'Fan',
+    avatar: normalizeMediaUrl(
+      f.avatar_url ||
+        (f.avatar_id
+          ? `https://image.showroom-cdn.com/showroom-prod/image/avatar/${f.avatar_id}.png`
+          : '')
+    ),
+    score: f.gold ?? f.reported_gold ?? f.point ?? f.points ?? 0
+  }));
+
+  const ss = d.live_info?.screenshot;
+  const screenshots = ss?.base_url
+    ? (ss.list || []).map(t => normalizeMediaUrl(`${ss.base_url}/${t}.${ss.format || 'jpg'}`))
+    : [];
+
+  return {
+    ok: true,
+    quota: res.quota,
+    data: {
+      ...base,
+      combinedStreamUrl,
+      recordings,
+      youtubeVideos: d.youtube_replay?.videos || [],
+      fans,
+      goldSummary: d.gold_summary || null,
+      giftItems,
+      screenshots,
+      leaderboards: {
+        jkt48connectBanner: normalizeMediaUrl(d.leaderboard_designs?.jkt48connect?.banner?.url),
+        jkt48connectPortrait: normalizeMediaUrl(d.leaderboard_designs?.jkt48connect?.portrait?.url),
+        photobookBanner: normalizeMediaUrl(d.leaderboard_designs?.photobook?.banner?.url),
+        avoneraBanner: normalizeMediaUrl(d.leaderboard_designs?.avonera48?.portrait?.url)
+      }
+    }
+  };
+}
+
+// ============================================================================
+// 6. COMMENTS FETCHER (JKT48CONNECT IDN/SR COMMENTS + SHOWROOM DIRECT + LOCAL)
+// ============================================================================
+async function fetchSessionComments({ platform, roomId, dataId, startedAt, after }) {
+  const startMs = startedAt ? Date.parse(startedAt) : 0;
+
+  try {
+    if (platform === 'IDN' && dataId) {
+      const res = await fetchJkt48Connect(
+        `/api/idn-comments/${encodeURIComponent(dataId)}`,
+        { after },
+        4000,
+        true
+      );
+      if (res.ok && Array.isArray(res.body?.comments)) {
+        const list = res.body.comments.map(c => {
+          const tStr = c.source_time || c.observed_at || '';
+          const tMs = tStr ? Date.parse(tStr) : 0;
+          const offsetSeconds =
+            startMs > 0 && tMs >= startMs ? Math.round((tMs - startMs) / 1000) : undefined;
+          return {
+            id: c.id || String(c.sequence || Math.random()),
+            user: c.user?.name || 'Penonton IDN',
+            avatar: c.user?.avatar_url || '',
+            text: c.comment || '',
+            time: tStr,
+            offsetSeconds,
+            sequence: c.sequence
+          };
+        });
+        return {
+          ok: true,
+          source: 'jkt48connect-idn',
+          status: res.body.status,
+          cursor: res.body.cursor,
+          comments: list
+        };
+      }
+    } else if (platform === 'SHOWROOM' && roomId) {
+      const res = await fetchJkt48Connect(
+        `/api/showroom-comments/${encodeURIComponent(roomId)}`,
+        { after },
+        4000,
+        true
+      );
+      if (res.ok && Array.isArray(res.body?.comments) && res.body.comments.length > 0) {
+        const list = res.body.comments.map(c => {
+          const tStr = c.observed_at || '';
+          const tMs = tStr ? Date.parse(tStr) : 0;
+          const offsetSeconds =
+            startMs > 0 && tMs >= startMs ? Math.round((tMs - startMs) / 1000) : undefined;
+          return {
+            id: c.id || String(c.sequence || Math.random()),
+            user: c.user?.name || 'Penonton Showroom',
+            avatar: c.user?.avatar_url || '',
+            text: c.comment || '',
+            time: tStr,
+            offsetSeconds,
+            sequence: c.sequence
+          };
+        });
+        return {
+          ok: true,
+          source: 'jkt48connect-showroom',
+          status: res.body.status,
+          cursor: res.body.cursor,
+          comments: list
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[COMMENTS] JKT48Connect comment fetch warning:', err.message);
+  }
+
+  // Fallback langsung ke Showroom comment_log jika sedang live Showroom
   if (platform === 'SHOWROOM' && roomId) {
     try {
       const srUrl = `https://www.showroom-live.com/api/live/comment_log?room_id=${encodeURIComponent(roomId)}`;
@@ -380,435 +563,27 @@ async function fetchLiveComments({ platform, roomId, dataId, after }) {
       });
       if (res.ok) {
         const data = await res.json();
-        const log = data.comment_log || [];
-        for (const c of log) {
-          // Filter angka 1-50 (counting Showroom)
+        const comments = [];
+        for (const c of data.comment_log || []) {
           if (/^\d+$/.test(String(c.comment || '').trim()) && Number(c.comment) <= 50) continue;
           comments.push({
             id: `${c.created_at}_${c.ua || c.name}`,
             user: c.name || 'Showroom Viewer',
             avatar: c.avatar_url || '',
             text: c.comment || '',
-            time: c.created_at ? new Date(c.created_at * 1000).toISOString() : new Date().toISOString()
+            time: c.created_at ? new Date(c.created_at * 1000).toISOString() : ''
           });
         }
-        return {
-          ok: true,
-          source: 'showroom-direct',
-          comments
-        };
+        return { ok: true, source: 'showroom-direct', comments };
       }
-    } catch (err) {
-      console.warn('[COMMENTS] Gagal mengambil comment_log Showroom:', err.message);
-    }
+    } catch {}
   }
 
-  return {
-    ok: false,
-    source: 'none',
-    needApiKey: platform === 'IDN' && !getApiKey(),
-    comments: []
-  };
+  return { ok: true, source: 'empty', comments: [] };
 }
 
 // ============================================================================
-// 5. INSTANT REPLAY ENGINE (FAST ARCHIVE CHANNELS + CHRONOLOGICAL SEARCH)
-// ============================================================================
-const FAST_ARCHIVE_CHANNELS = [
-  { handle: '@48DailyLive', name: 'JKT48 Daily Live', defaultPlatform: 'IDN' },
-  { handle: '@ShowroomJKT48', name: 'Showroom JKT48', defaultPlatform: 'SHOWROOM' },
-  { handle: '@JKT48LiveArchives', name: 'JKT48 Live Archives', defaultPlatform: 'IDN' },
-  { handle: '@SRliveJKT48', name: 'SRlive JKT48', defaultPlatform: 'SHOWROOM' }
-];
-
-function parseRelativeTimeScore(publishedText) {
-  if (!publishedText) return 999999;
-  const t = publishedText.toLowerCase();
-  const numMatch = t.match(/(\d+)/);
-  const num = numMatch ? parseInt(numMatch[1], 10) : 1;
-  if (t.includes('detik') || t.includes('second') || t.includes('baru saja')) return num;
-  if (t.includes('menit') || t.includes('minute')) return num * 60;
-  if (t.includes('jam') || t.includes('hour')) return num * 3600;
-  if (t.includes('hari') || t.includes('day') || /\b\d+\s*h\s+lalu\b/.test(t)) return num * 86400;
-  if (t.includes('minggu') || t.includes('week')) return num * 604800;
-  if (t.includes('bln') || t.includes('bulan') || t.includes('month')) return num * 2592000;
-  if (t.includes('thn') || t.includes('tahun') || t.includes('year')) return num * 31536000;
-  return 888888;
-}
-
-function parseDurationToSeconds(durationText) {
-  if (!durationText) return 0;
-  const parts = durationText
-    .trim()
-    .split(/[.:]/)
-    .map(p => parseInt(p, 10))
-    .filter(n => !Number.isNaN(n));
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 1) return parts[0];
-  return 0;
-}
-
-function detectPlatformFromTitle(title, fallback = 'IDN') {
-  const lower = title.toLowerCase();
-  if (lower.includes('showroom') || lower.includes('sr live') || lower.includes('srlive')) {
-    return 'SHOWROOM';
-  }
-  if (lower.includes('idn')) {
-    return 'IDN';
-  }
-  return fallback;
-}
-
-function extractLockupVideo(lockup, channelName, defaultPlatform) {
-  try {
-    const videoId =
-      lockup.contentId ||
-      lockup.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId;
-    if (!videoId) return null;
-
-    const title = lockup.metadata?.lockupMetadataViewModel?.title?.content || '';
-    const overlays = lockup.contentImage?.thumbnailViewModel?.overlays || [];
-    let duration = '';
-    for (const ov of overlays) {
-      const badgeText =
-        ov.thumbnailBottomOverlayViewModel?.badges?.[0]?.thumbnailBadgeViewModel?.text;
-      if (badgeText) {
-        duration = badgeText;
-        break;
-      }
-    }
-
-    const rows =
-      lockup.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows ||
-      [];
-    let views = '';
-    let published = '';
-    for (const row of rows) {
-      const parts = row.metadataParts || [];
-      for (const part of parts) {
-        const txt = part.accessibilityLabel || part.text?.content || '';
-        if (txt.includes('lalu') || txt.includes('ago') || txt.includes('Streaming')) {
-          published = part.text?.content || txt;
-        } else if (txt) {
-          views = txt.includes('ditonton') || txt.includes('views') ? txt : `${txt} x ditonton`;
-        }
-      }
-    }
-
-    const sources = lockup.contentImage?.thumbnailViewModel?.image?.sources || [];
-    const thumb =
-      sources.at(-1)?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-    return {
-      videoId,
-      title,
-      published,
-      duration,
-      durationSeconds: parseDurationToSeconds(duration),
-      views,
-      channel: channelName,
-      platform: detectPlatformFromTitle(title, defaultPlatform),
-      thumb,
-      ageScore: parseRelativeTimeScore(published)
-    };
-  } catch {
-    return null;
-  }
-}
-
-function extractVideoRenderer(v, fallbackChannel = '', defaultPlatform = 'IDN') {
-  try {
-    const videoId = v.videoId;
-    if (!videoId) return null;
-    const title = v.title?.runs?.map(r => r.text).join('') || v.title?.simpleText || '';
-    const published = v.publishedTimeText?.simpleText || '';
-    const duration = v.lengthText?.simpleText || '';
-    const views = v.viewCountText?.simpleText || '';
-    const channel = v.ownerText?.runs?.[0]?.text || fallbackChannel;
-    const thumb =
-      v.thumbnail?.thumbnails?.at(-1)?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-    return {
-      videoId,
-      title,
-      published,
-      duration,
-      durationSeconds: parseDurationToSeconds(duration),
-      views,
-      channel,
-      platform: detectPlatformFromTitle(title, defaultPlatform),
-      thumb,
-      ageScore: parseRelativeTimeScore(published)
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function fetchChannelReplays(channelInfo) {
-  try {
-    const res = await fetch(`https://www.youtube.com/${channelInfo.handle}/videos`, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8'
-      },
-      signal: AbortSignal.timeout(10000)
-    });
-    const html = await res.text();
-    const match = html.match(/var ytInitialData = (\{[\s\S]*?\});<\/script>/);
-    if (!match) return [];
-
-    const data = JSON.parse(match[1]);
-    const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs || [];
-    const videos = [];
-
-    for (const t of tabs) {
-      const grid = t.tabRenderer?.content?.richGridRenderer;
-      if (!grid) continue;
-      for (const item of grid.contents || []) {
-        const content = item.richItemRenderer?.content;
-        if (!content) continue;
-        if (content.lockupViewModel) {
-          const parsed = extractLockupVideo(
-            content.lockupViewModel,
-            channelInfo.name,
-            channelInfo.defaultPlatform
-          );
-          if (parsed) videos.push(parsed);
-        } else if (content.videoRenderer) {
-          const parsed = extractVideoRenderer(
-            content.videoRenderer,
-            channelInfo.name,
-            channelInfo.defaultPlatform
-          );
-          if (parsed) videos.push(parsed);
-        }
-      }
-    }
-    return videos;
-  } catch (err) {
-    console.warn(`[WARN] Gagal mengambil channel ${channelInfo.handle}:`, err.message);
-    return [];
-  }
-}
-
-async function searchYouTubeReplays(query, sp = 'CAISAhAB') {
-  try {
-    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=${sp}`;
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8'
-      },
-      signal: AbortSignal.timeout(10000)
-    });
-    const html = await res.text();
-    const match = html.match(/var ytInitialData = (\{[\s\S]*?\});<\/script>/);
-    if (!match) return [];
-
-    const data = JSON.parse(match[1]);
-    const sections =
-      data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer
-        ?.contents || [];
-    const videos = [];
-    for (const sec of sections) {
-      for (const item of sec?.itemSectionRenderer?.contents || []) {
-        if (item.videoRenderer) {
-          const parsed = extractVideoRenderer(item.videoRenderer);
-          if (parsed) videos.push(parsed);
-        } else if (item.lockupViewModel) {
-          const parsed = extractLockupVideo(item.lockupViewModel, 'YouTube Archive', 'IDN');
-          if (parsed) videos.push(parsed);
-        }
-      }
-    }
-    return videos;
-  } catch (err) {
-    console.warn(`[WARN] Gagal search YouTube "${query}":`, err.message);
-    return [];
-  }
-}
-
-// Fetch comments from a YouTube video (public InnerTube continuation)
-async function fetchYouTubeVideoComments(videoId) {
-  try {
-    const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
-    const html = await fetch(watchUrl, {
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8'
-      },
-      signal: AbortSignal.timeout(10000)
-    }).then(r => r.text());
-
-    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
-    const initialDataMatch = html.match(/var ytInitialData = (\{[\s\S]*?\});<\/script>/);
-    if (!apiKeyMatch || !initialDataMatch) return [];
-
-    const ytData = JSON.parse(initialDataMatch[1]);
-    const panels = ytData.engagementPanels || [];
-    let token = null;
-
-    const strData = JSON.stringify(panels) + JSON.stringify(ytData.contents || {});
-    const tokenMatch = strData.match(/"continuationCommand":\{"token":"([^"]+)"/);
-    if (tokenMatch) token = tokenMatch[1];
-    if (!token) return [];
-
-    const nextRes = await fetch(
-      `https://www.youtube.com/youtubei/v1/next?key=${apiKeyMatch[1]}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
-        body: JSON.stringify({
-          context: {
-            client: { clientName: 'WEB', clientVersion: '2.20260101.00.00', hl: 'id', gl: 'ID' }
-          },
-          continuation: token
-        }),
-        signal: AbortSignal.timeout(10000)
-      }
-    ).then(r => r.json());
-
-    // Cari token ke-2 jika baru header comments
-    const nextStr = JSON.stringify(nextRes);
-    const subTokenMatch = nextStr.match(/"reloadContinuationItemsCommand":\{"targetId":"engagement-panel-comments-section","continuationItems":\[\{"continuationItemRenderer":\{"trigger":"CONTINUATION_TRIGGER_ON_ITEM_SHOWN","continuationEndpoint":\{[\s\S]*?"token":"([^"]+)"/);
-
-    let payloadToParse = nextRes;
-    if (subTokenMatch && !nextStr.includes('commentEntityPayload')) {
-      payloadToParse = await fetch(
-        `https://www.youtube.com/youtubei/v1/next?key=${apiKeyMatch[1]}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
-          body: JSON.stringify({
-            context: {
-              client: { clientName: 'WEB', clientVersion: '2.20260101.00.00', hl: 'id', gl: 'ID' }
-            },
-            continuation: subTokenMatch[1]
-          }),
-          signal: AbortSignal.timeout(10000)
-        }
-      ).then(r => r.json());
-    }
-
-    const mutations =
-      payloadToParse?.frameworkUpdates?.entityBatchUpdate?.mutations || [];
-    const comments = [];
-    for (const m of mutations) {
-      const c = m.payload?.commentEntityPayload;
-      if (c) {
-        comments.push({
-          id: c.key || String(Math.random()),
-          user: c.author?.displayName || 'Penonton YouTube',
-          avatar: c.author?.avatarThumbnailUrl || '',
-          text: c.properties?.content?.content || '',
-          time: c.properties?.publishedTime || '',
-          likes: c.toolbar?.likeCountNotliked || ''
-        });
-      }
-    }
-    return comments;
-  } catch (err) {
-    console.warn('[YT-COMMENTS] Gagal memuat komentar YouTube:', err.message);
-    return [];
-  }
-}
-
-let replayFeedCache = { data: [], updatedAt: 0 };
-
-async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly = true, force = false }) {
-  const members = await getMembers();
-  const now = Date.now();
-  let list = [];
-
-  const hasCustomSearch = Boolean(query.trim() || member.trim());
-
-  if (!hasCustomSearch) {
-    if (!force && replayFeedCache.data.length > 0 && now - replayFeedCache.updatedAt < 3 * 60 * 1000) {
-      list = [...replayFeedCache.data];
-    } else {
-      const results = await Promise.all([
-        ...FAST_ARCHIVE_CHANNELS.map(ch => fetchChannelReplays(ch)),
-        searchYouTubeReplays('Live IDN JKT48', 'CAISAhAB'),
-        searchYouTubeReplays('Live Showroom JKT48', 'CAISAhAB')
-      ]);
-      const merged = results.flat();
-      const seen = new Set();
-      const deduped = [];
-      for (const v of merged) {
-        if (!v || !v.videoId || seen.has(v.videoId)) continue;
-        const lower = v.title.toLowerCase();
-        if (!lower.includes('jkt48') && !lower.includes('idn') && !lower.includes('showroom')) {
-          continue;
-        }
-        seen.add(v.videoId);
-        v.members = detectMembersInTitle(v.title, members);
-        deduped.push(v);
-      }
-      deduped.sort((a, b) => a.ageScore - b.ageScore);
-      replayFeedCache = { data: deduped, updatedAt: now };
-      list = [...deduped];
-    }
-  } else {
-    const searchTerms = [];
-    if (member) searchTerms.push(`${member} JKT48`);
-    if (query) searchTerms.push(query);
-    const baseQuery = searchTerms.join(' ');
-
-    const queriesToRun = [];
-    if (platform === 'IDN') {
-      queriesToRun.push(`Live IDN ${baseQuery}`);
-    } else if (platform === 'SHOWROOM') {
-      queriesToRun.push(`Live Showroom ${baseQuery}`);
-    } else {
-      queriesToRun.push(`Live IDN ${baseQuery}`);
-      queriesToRun.push(`Live Showroom ${baseQuery}`);
-    }
-
-    const cachedMatches = (replayFeedCache.data || []).filter(v => {
-      const t = v.title.toLowerCase();
-      const matchM = !member || t.includes(member.toLowerCase());
-      const matchQ = !query || t.includes(query.toLowerCase());
-      return matchM && matchQ;
-    });
-
-    const searchResults = await Promise.all(
-      queriesToRun.map(q => searchYouTubeReplays(q, 'CAISAhAB'))
-    );
-    const merged = [...cachedMatches, ...searchResults.flat()];
-    const seen = new Set();
-    for (const v of merged) {
-      if (!v || !v.videoId || seen.has(v.videoId)) continue;
-      seen.add(v.videoId);
-      v.members = v.members || detectMembersInTitle(v.title, members);
-      list.push(v);
-    }
-    list.sort((a, b) => a.ageScore - b.ageScore);
-  }
-
-  if (platform && platform !== 'ALL') {
-    list = list.filter(v => v.platform.toUpperCase() === platform.toUpperCase());
-  }
-
-  if (member) {
-    const mLower = member.toLowerCase();
-    list = list.filter(
-      v =>
-        v.title.toLowerCase().includes(mLower) ||
-        (v.members || []).some(m => m.nickname.toLowerCase() === mLower)
-    );
-  }
-
-  if (fullOnly) {
-    list = list.filter(v => v.durationSeconds === 0 || v.durationSeconds >= 300);
-  }
-
-  return list;
-}
-
-// ============================================================================
-// 6. PURE NODE.JS NATIVE HLS STREAM + CHAT RECORDER (DVR TANPA FFMPEG)
+// 7. PURE NODE.JS NATIVE HLS STREAM + CHAT RECORDER (DVR LOKAL)
 // ============================================================================
 async function resolveBestMediaPlaylist(masterUrl) {
   const res = await fetch(masterUrl, {
@@ -894,34 +669,37 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
   fs.writeFileSync(commentsFilePath, '[]', 'utf8');
 
   const writeLocalM3u8 = isEnded => {
-    const lines = [
-      '#EXTM3U',
-      '#EXT-X-VERSION:3',
-      '#EXT-X-TARGETDURATION:6',
-      '#EXT-X-MEDIA-SEQUENCE:0',
-      '#EXT-X-PLAYLIST-TYPE:EVENT'
-    ];
-    for (const entry of playlistEntries) {
-      lines.push(`#EXTINF:${entry.duration.toFixed(3)},`);
-      lines.push(entry.fileName);
-    }
-    if (isEnded) {
-      lines.push('#EXT-X-ENDLIST');
-    }
-    fs.writeFileSync(path.join(recFolder, 'index.m3u8'), lines.join('\n') + '\n', 'utf8');
+    try {
+      if (!fs.existsSync(recFolder)) return;
+      const lines = [
+        '#EXTM3U',
+        '#EXT-X-VERSION:3',
+        '#EXT-X-TARGETDURATION:6',
+        '#EXT-X-MEDIA-SEQUENCE:0',
+        '#EXT-X-PLAYLIST-TYPE:EVENT'
+      ];
+      for (const entry of playlistEntries) {
+        lines.push(`#EXTINF:${entry.duration.toFixed(3)},`);
+        lines.push(entry.fileName);
+      }
+      if (isEnded) {
+        lines.push('#EXT-X-ENDLIST');
+      }
+      fs.writeFileSync(path.join(recFolder, 'index.m3u8'), lines.join('\n') + '\n', 'utf8');
+    } catch {}
   };
 
   writeLocalM3u8(false);
 
-  // Loop 1: Rekam Komentar Live secara otomatis bersama video!
   const commentLoopPromise = (async () => {
     let cursor = undefined;
     while (!stopped) {
       try {
-        const res = await fetchLiveComments({
+        const res = await fetchSessionComments({
           platform: meta.platform,
           roomId: meta.roomId,
           dataId: meta.dataId,
+          startedAt: meta.startedAt,
           after: cursor
         });
         if (res.ok && Array.isArray(res.comments)) {
@@ -930,7 +708,10 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
           for (const c of res.comments) {
             if (!c.id || seenCommentIds.has(c.id)) continue;
             seenCommentIds.add(c.id);
-            const offsetSeconds = Math.max(0, Math.round((Date.now() - startEpochMs) / 1000));
+            const offsetSeconds =
+              typeof c.offsetSeconds === 'number'
+                ? c.offsetSeconds
+                : Math.max(0, Math.round((Date.now() - startEpochMs) / 1000));
             recordedComments.push({
               ...c,
               offsetSeconds
@@ -943,11 +724,10 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
           }
         }
       } catch {}
-      await new Promise(r => setTimeout(r, 4000));
+      await new Promise(r => setTimeout(r, 4500));
     }
   })();
 
-  // Loop 2: Rekam Segmen Video HLS (.ts)
   const loopPromise = (async () => {
     let consecutiveErrors = 0;
     let mediaPlaylistUrl = streamUrl;
@@ -1023,12 +803,23 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
     }
 
     stopped = true;
-    meta.status = 'completed';
-    meta.endedAt = new Date().toISOString();
-    writeLocalM3u8(true);
-    saveJson(RECORDINGS_META_FILE, recordingsMeta);
+    finishedStreamUrls.add(streamUrl);
     activeRecorders.delete(recId);
-    console.log(`[REC] Rekaman selesai: ${meta.memberName} (${meta.segmentCount} segmen, ${meta.commentCount} komentar)`);
+
+    if (meta.segmentCount <= 0) {
+      recordingsMeta = recordingsMeta.filter(r => r.id !== recId);
+      try {
+        if (fs.existsSync(recFolder)) fs.rmSync(recFolder, { recursive: true, force: true });
+      } catch {}
+      saveJson(RECORDINGS_META_FILE, recordingsMeta);
+      console.log(`[REC] Stream ${meta.memberName} sudah berakhir (0 segmen), dibersihkan.`);
+    } else {
+      meta.status = 'completed';
+      meta.endedAt = new Date().toISOString();
+      writeLocalM3u8(true);
+      saveJson(RECORDINGS_META_FILE, recordingsMeta);
+      console.log(`[REC] Rekaman selesai: ${meta.memberName} (${meta.segmentCount} segmen, ${meta.commentCount} komentar)`);
+    }
   })();
 
   const controller = {
@@ -1046,7 +837,7 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
 }
 
 // ============================================================================
-// 7. AUTO-RECORDER BACKGROUND WATCHER (SEMUA MEMBER ATAU KHUSUS OSHI)
+// 8. AUTO-RECORDER BACKGROUND WATCHER
 // ============================================================================
 async function checkAutoRecord() {
   if (!appConfig.autoRecordEnabled) return;
@@ -1056,7 +847,7 @@ async function checkAutoRecord() {
   try {
     const liveList = await getNowLive(true);
     for (const live of liveList) {
-      if (!live.bestStreamUrl) continue;
+      if (!live.bestStreamUrl || finishedStreamUrls.has(live.bestStreamUrl)) continue;
       const nameLower = (live.name || '').toLowerCase();
       const keyLower = (live.urlKey || '').toLowerCase();
 
@@ -1093,7 +884,7 @@ if (!IS_VERCEL) {
 }
 
 // ============================================================================
-// 8. HTTP SERVER & API ROUTES
+// 9. HTTP SERVER & API ROUTES
 // ============================================================================
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -1154,7 +945,7 @@ async function handleRequest(req, res) {
     if (pathname === '/api/now-live' && req.method === 'GET') {
       const force = parsedUrl.searchParams.get('refresh') === '1';
       const data = await getNowLive(force);
-      return sendJson(res, 200, { ok: true, count: data.length, data });
+      return sendJson(res, 200, { ok: true, count: data.length, quota: lastQuotaInfo, data });
     }
 
     // --- API: GET /api/members ---
@@ -1163,76 +954,43 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, { ok: true, count: data.length, data });
     }
 
-    // --- API: GET /api/replays ---
+    // --- API: GET /api/replays (100% dari JKT48Connect /api/recent) ---
     if (pathname === '/api/replays' && req.method === 'GET') {
+      const page = parsedUrl.searchParams.get('page') || '1';
+      const perpage = parsedUrl.searchParams.get('perpage') || '24';
       const query = parsedUrl.searchParams.get('q') || '';
       const member = parsedUrl.searchParams.get('member') || '';
       const platform = parsedUrl.searchParams.get('platform') || 'ALL';
-      const fullOnly = parsedUrl.searchParams.get('fullOnly') !== '0';
       const force = parsedUrl.searchParams.get('refresh') === '1';
 
-      const data = await getReplays({ query, member, platform, fullOnly, force });
-      return sendJson(res, 200, { ok: true, count: data.length, data });
+      const result = await getJkcReplays({ page, perpage, platform, member, query, force });
+      return sendJson(res, 200, result);
     }
 
-    // --- API: GET /api/jkt48connect/recent (Daftar Recent + Replay JKT48Connect) ---
-    if (pathname === '/api/jkt48connect/recent' && req.method === 'GET') {
-      if (!getApiKey()) {
-        return sendJson(res, 200, {
-          ok: false,
-          needApiKey: true,
-          error: 'Masukkan API Key JKT48Connect (jkc_...) gratis untuk membuka fitur Recent, Gift, Screenshot & Unlisted Replay.'
-        });
-      }
-      const page = parsedUrl.searchParams.get('page') || '1';
-      const perpage = parsedUrl.searchParams.get('perpage') || '15';
-      const search = parsedUrl.searchParams.get('s') || '';
-      const type = parsedUrl.searchParams.get('type') || '';
-
-      const result = await fetchJkt48Connect('/api/recent', { page, perpage, s: search, type });
-      return sendJson(res, 200, {
-        ok: result.ok,
-        status: result.status,
-        quota: result.quota,
-        data: result.body
-      });
+    // --- API: GET /api/replays/:dataId (Detail Replay, Stream, Gift, Fans, Screenshot) ---
+    const detailMatch = pathname.match(/^\/api\/replays\/([^/]+)$/);
+    if (detailMatch && req.method === 'GET') {
+      const dataId = detailMatch[1];
+      const force = parsedUrl.searchParams.get('refresh') === '1';
+      const result = await getJkcReplayDetail(dataId, force);
+      return sendJson(res, 200, result);
     }
 
-    // --- API: GET /api/jkt48connect/recent/:id (Detail Recent, Replay Stream, Gifts, Screenshots) ---
-    const recentDetailMatch = pathname.match(/^\/api\/jkt48connect\/recent\/([^/]+)$/);
-    if (recentDetailMatch && req.method === 'GET') {
-      if (!getApiKey()) {
-        return sendJson(res, 401, { ok: false, needApiKey: true, error: 'API Key diperlukan' });
-      }
-      const dataId = recentDetailMatch[1];
-      const result = await fetchJkt48Connect(`/api/recent/${encodeURIComponent(dataId)}`);
-      return sendJson(res, 200, {
-        ok: result.ok,
-        status: result.status,
-        quota: result.quota,
-        data: result.body
-      });
-    }
-
-    // --- API: GET /api/comments (Komentar Live / Replay YouTube / Rekaman Lokal) ---
+    // --- API: GET /api/comments ---
     if (pathname === '/api/comments' && req.method === 'GET') {
-      const mode = parsedUrl.searchParams.get('mode') || 'live'; // 'live' | 'youtube' | 'local'
-      if (mode === 'youtube') {
-        const videoId = parsedUrl.searchParams.get('videoId') || '';
-        const comments = await fetchYouTubeVideoComments(videoId);
-        return sendJson(res, 200, { ok: true, source: 'youtube', comments });
-      }
+      const mode = parsedUrl.searchParams.get('mode') || 'session';
       if (mode === 'local') {
         const recId = parsedUrl.searchParams.get('recId') || '';
         const cFile = path.join(RECORDINGS_DIR, recId, 'comments.json');
         const comments = loadJson(cFile, []);
         return sendJson(res, 200, { ok: true, source: 'local-dvr', comments });
       }
-      const platform = parsedUrl.searchParams.get('platform') || 'SHOWROOM';
+      const platform = parsedUrl.searchParams.get('platform') || 'IDN';
       const roomId = parsedUrl.searchParams.get('roomId') || '';
       const dataId = parsedUrl.searchParams.get('dataId') || '';
+      const startedAt = parsedUrl.searchParams.get('startedAt') || '';
       const after = parsedUrl.searchParams.get('after') || '';
-      const result = await fetchLiveComments({ platform, roomId, dataId, after });
+      const result = await fetchSessionComments({ platform, roomId, dataId, startedAt, after });
       return sendJson(res, 200, result);
     }
 
@@ -1394,7 +1152,8 @@ async function handleRequest(req, res) {
           hasApiKey: Boolean(getApiKey()),
           maskedApiKey: getApiKey()
             ? `${getApiKey().slice(0, 8)}...${getApiKey().slice(-4)}`
-            : ''
+            : '',
+          quota: lastQuotaInfo
         }
       });
     }
@@ -1409,7 +1168,7 @@ async function handleRequest(req, res) {
       if (Array.isArray(body.oshiList)) {
         appConfig.oshiList = [...new Set(body.oshiList.map(s => String(s).trim()).filter(Boolean))];
       }
-      if (typeof body.jkt48ConnectApiKey === 'string') {
+      if (typeof body.jkt48ConnectApiKey === 'string' && body.jkt48ConnectApiKey.trim()) {
         appConfig.jkt48ConnectApiKey = body.jkt48ConnectApiKey.trim();
       }
       saveJson(OSHI_CONFIG_FILE, appConfig);
@@ -1421,7 +1180,8 @@ async function handleRequest(req, res) {
           hasApiKey: Boolean(getApiKey()),
           maskedApiKey: getApiKey()
             ? `${getApiKey().slice(0, 8)}...${getApiKey().slice(-4)}`
-            : ''
+            : '',
+          quota: lastQuotaInfo
         }
       });
     }
@@ -1469,7 +1229,7 @@ const server = http.createServer(handleRequest);
 if (!IS_VERCEL) {
   server.listen(PORT, '0.0.0.0', () => {
     console.log('==============================================================');
-    console.log(` 🎬 JKT48 Hybrid Replay & Live Studio aktif!`);
+    console.log(` 🎬 JKT48 Replay & DVR Studio (JKT48Connect Edition) aktif!`);
     console.log(` 💻 Buka di PC     : http://localhost:${PORT}`);
     console.log(` 📱 Buka di HP WiFi: http://192.168.1.3:${PORT}`);
     console.log('==============================================================');
