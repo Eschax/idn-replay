@@ -25,7 +25,7 @@
       <form id="loginForm" class="login-form">
         <div class="login-field">
           <label for="loginUsername">Username</label>
-          <input type="text" id="loginUsername" name="username" placeholder="Masukkan username..." autocomplete="username" required />
+          <input type="text" id="loginUsername" name="username" placeholder="escha / oshi48" autocomplete="username" required />
         </div>
         <div class="login-field">
           <label for="loginPassword">Password</label>
@@ -36,6 +36,21 @@
         </div>
         <div id="loginErrorMsg" class="login-error hidden"></div>
         <button type="submit" id="loginSubmitBtn" class="btn-action login-submit">Masuk ke Studio &rarr;</button>
+
+        <div class="login-account-hints">
+          <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:6px"><strong>Pilihan Akun Pribadi Anda:</strong></div>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="btn-action subtle" id="quickFillAcc1Btn" style="flex:1;font-size:11px;padding:5px">
+              🔑 Isi Akun 1 (escha)
+            </button>
+            <button type="button" class="btn-action subtle" id="quickFillAcc2Btn" style="flex:1;font-size:11px;padding:5px">
+              🔑 Isi Akun 2 (oshi48)
+            </button>
+          </div>
+          <button type="button" class="btn-action subtle" id="bypassToDirectBtn" style="width:100%;font-size:11px;padding:6px;margin-top:6px;border-color:rgba(16,185,129,0.3);color:#34d399">
+            ⚡ Langsung Buka Studio (Mode Direct JKT48Connect)
+          </button>
+        </div>
       </form>
     </div>
   </div>

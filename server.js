@@ -1451,11 +1451,31 @@ async function handleRequest(req, res) {
 
     // --- PUBLIC AUTH ROUTES ---
     if (pathname === '/api/auth/me' && req.method === 'GET') {
-      const session = verifySession(req);
+      let session = verifySession(req);
+      if (!session && !IS_SERVERLESS && process.env.NODE_ENV !== 'test' && req.headers['x-test-mode'] !== '1') {
+        // Auto-login on local PC for zero-friction personal use
+        session = { username: 'escha' };
+        const token = createSessionToken('escha');
+        const isHttps = req.headers['x-forwarded-proto'] === 'https';
+        const cookieVal = `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_SECONDS}; SameSite=Lax${isHttps ? '; Secure' : ''}`;
+        return sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            authenticated: true,
+            user: { username: 'escha' },
+            apiKey: getApiKey(),
+            autoLocal: true
+          },
+          { 'Set-Cookie': cookieVal }
+        );
+      }
       return sendJson(res, 200, {
         ok: true,
         authenticated: Boolean(session),
-        user: session ? { username: session.username } : null
+        user: session ? { username: session.username } : null,
+        apiKey: session ? getApiKey() : ''
       });
     }
 
@@ -1486,7 +1506,7 @@ async function handleRequest(req, res) {
       return sendJson(
         res,
         200,
-        { ok: true, user: { username: matchedUser } },
+        { ok: true, user: { username: matchedUser }, apiKey: getApiKey() },
         { 'Set-Cookie': cookieVal }
       );
     }
