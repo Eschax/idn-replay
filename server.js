@@ -1040,6 +1040,44 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, result);
     }
 
+    // --- API: GET /api/download-mp4?url=...&name=... ---
+    if (pathname === '/api/download-mp4' && req.method === 'GET') {
+      const targetUrl = normalizeMediaUrl(parsedUrl.searchParams.get('url') || '');
+      if (!targetUrl || !isAllowedStreamUrl(targetUrl)) {
+        return sendJson(res, 400, { ok: false, error: 'URL video tidak diizinkan' });
+      }
+      const rawName = (parsedUrl.searchParams.get('name') || 'JKT48_Replay').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeFilename = `${rawName}.mp4`;
+
+      if (IS_SERVERLESS) {
+        res.writeHead(302, { Location: targetUrl });
+        return res.end();
+      }
+
+      try {
+        const { Readable } = require('node:stream');
+        const upstream = await fetch(targetUrl, {
+          headers: { 'User-Agent': USER_AGENT }
+        });
+        if (!upstream.ok || !upstream.body) {
+          res.writeHead(302, { Location: targetUrl });
+          return res.end();
+        }
+        const headers = {
+          'Content-Type': 'video/mp4',
+          'Content-Disposition': `attachment; filename="${safeFilename}"`,
+          'Access-Control-Allow-Origin': '*'
+        };
+        const cl = upstream.headers.get('content-length');
+        if (cl) headers['Content-Length'] = cl;
+        res.writeHead(200, headers);
+        return Readable.fromWeb(upstream.body).pipe(res);
+      } catch {
+        res.writeHead(302, { Location: targetUrl });
+        return res.end();
+      }
+    }
+
     // --- API: GET /api/hls-proxy?url=... ---
     if (pathname === '/api/hls-proxy' && req.method === 'GET') {
       const targetUrl = parsedUrl.searchParams.get('url');

@@ -139,6 +139,214 @@ function formatRelativeIndo(isoStr) {
 }
 
 // ============================================================================
+// 0. DIRECT BROWSER JKT48CONNECT CLIENT & MP4 DOWNLOAD HELPER
+// ============================================================================
+const JKC_CLIENT_KEY = 'jkc_82a84efebf4b67b73fa0c20b7096ea8de1e336c8';
+
+function normalizeMediaUrlClient(url) {
+  if (!url) return '';
+  return String(url).replace('https://api.jkt48connect.app:8443/', 'https://api.jkt48connect.app/');
+}
+
+function isLocalhostEnv() {
+  const h = window.location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.') || h.startsWith('10.');
+}
+
+function buildDownloadMp4Href(mp4Url, titleStr, partNum = 1) {
+  const cleanUrl = normalizeMediaUrlClient(mp4Url);
+  if (!cleanUrl) return '#';
+  const safeName = `${String(titleStr || 'JKT48_Replay').replace(/[^a-zA-Z0-9_-]/g, '_')}_Part${partNum}`;
+  if (isLocalhostEnv()) {
+    return `/api/download-mp4?url=${encodeURIComponent(cleanUrl)}&name=${encodeURIComponent(safeName)}`;
+  }
+  return cleanUrl;
+}
+
+async function fetchJkcDirect(endpointPath, params = {}) {
+  const u = new URL(endpointPath, 'https://api.jkt48connect.app');
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') u.searchParams.set(k, String(v));
+  }
+  u.searchParams.set('api_key', JKC_CLIENT_KEY);
+  const res = await fetch(u.toString());
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+function formatRecentItemClient(item) {
+  const isIdn = (item.type || '').toLowerCase() === 'idn' || Boolean(item.idn);
+  const memberName = item.member?.name || item.room_info?.name || 'Member JKT48';
+  const nickname =
+    item.member?.nickname || item.room_info?.nickname || memberName.split(' ')[0];
+  const avatar = normalizeMediaUrlClient(
+    item.member?.img_alt || item.member?.img || item.room_info?.img_alt || ''
+  );
+  const thumb = normalizeMediaUrlClient(
+    item.idn?.image || item.member?.img_alt || item.member?.img || ''
+  );
+  const liveTitle = item.idn?.title || `Live ${nickname} JKT48`;
+  const startDate = item.live_info?.date?.start || item.created_at || '';
+  const endDate = item.live_info?.date?.end || item.created_at || '';
+  const durMs = item.live_info?.duration || 0;
+  const durationSeconds = durMs > 10000 ? Math.round(durMs / 1000) : durMs;
+  const viewers = item.live_info?.viewers?.num || item.viewers || 0;
+  const points = item.points || item.total_gifts || 0;
+  const pointUnit = item.point_unit || (isIdn ? 'idn_gold' : 'showroom_points');
+  const streamUrl = normalizeMediaUrlClient(
+    item.playback?.stream_url || item.recording?.stream_url || ''
+  );
+  const ytVideos = item.youtube_replay?.videos || [];
+  const playbackStatus = item.playback?.status || (streamUrl ? 'ready' : 'pending');
+  const parts = item.playback?.parts ?? (streamUrl ? 1 : 0);
+
+  return {
+    dataId: item.data_id || item._id,
+    roomId: item.room_id,
+    platform: isIdn ? 'IDN' : 'SHOWROOM',
+    memberName,
+    nickname,
+    avatar,
+    thumb,
+    title: `${nickname} JKT48 — ${liveTitle}`,
+    liveTitle,
+    startedAt: startDate,
+    endedAt: endDate,
+    durationSeconds,
+    viewers,
+    points,
+    pointUnit,
+    playbackStatus,
+    parts,
+    streamUrl,
+    youtubeId: item.playback?.youtube_id || ytVideos[0]?.youtube_id || null,
+    youtubeUrl: item.playback?.youtube_url || ytVideos[0]?.url || null
+  };
+}
+
+function formatReplayDetailClient(d) {
+  const base = formatRecentItemClient({ ...d, member: d.member || d.room_info });
+  const recordings = (d.recordings || []).map((r, idx) => ({
+    part: idx + 1,
+    run: r.run,
+    mp4Url: normalizeMediaUrlClient(r.url),
+    streamUrl: normalizeMediaUrlClient(r.stream_url),
+    playerUrl: normalizeMediaUrlClient(r.player_url),
+    durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : 0,
+    sizeBytes: r.bytes || 0,
+    startedAt: r.started_at,
+    partial: r.partial
+  }));
+  const combinedStreamUrl = normalizeMediaUrlClient(
+    d.playback?.stream_url ||
+      d.recording_session?.stream_url ||
+      d.recording?.stream_url ||
+      recordings[0]?.streamUrl ||
+      ''
+  );
+  let giftItems = [];
+  if (Array.isArray(d.live_info?.gift?.list) && d.live_info.gift.list.length > 0) {
+    giftItems = d.live_info.gift.list.map(g => ({
+      id: g.id || g.name,
+      name: g.name || 'Gift',
+      img: normalizeMediaUrlClient(g.img || ''),
+      num: g.num || 1,
+      point: g.point || 0
+    }));
+  } else if (Array.isArray(d.live_info?.gift?.log)) {
+    const giftMap = new Map();
+    for (const entry of d.live_info.gift.log) {
+      for (const g of entry.gifts || []) {
+        const key = g.id || g.name;
+        if (!giftMap.has(key)) {
+          giftMap.set(key, {
+            id: key,
+            name: g.name || 'Gift',
+            img: normalizeMediaUrlClient(g.img || ''),
+            num: 0,
+            point: g.point || 0
+          });
+        }
+        giftMap.get(key).num += g.num || 1;
+      }
+    }
+    giftItems = [...giftMap.values()].sort((a, b) => b.point * b.num - a.point * a.num);
+  }
+  const fans = (d.fans || d.users || []).slice(0, 30).map((f, idx) => ({
+    rank: f.rank || idx + 1,
+    id: f.id,
+    name: f.name || 'Fan',
+    avatar: normalizeMediaUrlClient(
+      f.avatar_url ||
+        (f.avatar_id
+          ? `https://image.showroom-cdn.com/showroom-prod/image/avatar/${f.avatar_id}.png`
+          : '')
+    ),
+    score: f.gold ?? f.reported_gold ?? f.point ?? f.points ?? 0
+  }));
+  const ss = d.live_info?.screenshot;
+  const screenshots = ss?.base_url
+    ? (ss.list || []).map(t => normalizeMediaUrlClient(`${ss.base_url}/${t}.${ss.format || 'jpg'}`))
+    : [];
+
+  return {
+    ...base,
+    combinedStreamUrl,
+    recordings,
+    youtubeVideos: d.youtube_replay?.videos || [],
+    fans,
+    goldSummary: d.gold_summary || null,
+    giftItems,
+    screenshots,
+    leaderboards: {
+      jkt48connectBanner: normalizeMediaUrlClient(d.leaderboard_designs?.jkt48connect?.banner?.url),
+      jkt48connectPortrait: normalizeMediaUrlClient(d.leaderboard_designs?.jkt48connect?.portrait?.url),
+      photobookBanner: normalizeMediaUrlClient(d.leaderboard_designs?.photobook?.banner?.url),
+      avoneraBanner: normalizeMediaUrlClient(d.leaderboard_designs?.avonera48?.portrait?.url)
+    }
+  };
+}
+
+async function getReplayDetailWithFallback(dataId) {
+  try {
+    const res = await fetch(`/api/replays/${encodeURIComponent(dataId)}`);
+    const json = await res.json();
+    if (json.ok && json.data) return json.data;
+  } catch {}
+  const raw = await fetchJkcDirect(`/api/recent/${encodeURIComponent(dataId)}`);
+  return formatReplayDetailClient(raw);
+}
+
+async function triggerDirectDownloadForReplay(item) {
+  showToast(`Menyiapkan link download video ${item.nickname}...`);
+  try {
+    const d = await getReplayDetailWithFallback(item.dataId);
+    const recs = d.recordings || [];
+    const firstMp4 = recs[0]?.mp4Url || '';
+    if (!firstMp4) {
+      showToast('File MP4 belum tersedia untuk sesi ini.');
+      return;
+    }
+    const dlUrl = buildDownloadMp4Href(firstMp4, d.title, 1);
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.download = `${d.nickname}_JKT48_Replay.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    if (recs.length > 1) {
+      showToast(`Mengunduh Bagian 1 (${recs.length} bagian tersedia di dalam Player).`);
+    } else {
+      showToast(`Download video ${d.nickname} dimulai!`);
+    }
+  } catch (err) {
+    showToast(`Gagal mengunduh video: ${err.message}`);
+  }
+}
+
+// ============================================================================
 // 1. TAB & SIDE-PANEL NAVIGATION
 // ============================================================================
 function switchTab(tabName) {
@@ -206,11 +414,48 @@ async function loadCommentsForPlayer(opts) {
 
   const fetchOnce = async () => {
     try {
-      const params = new URLSearchParams(opts);
-      const res = await fetch(`/api/comments?${params.toString()}`);
-      const json = await res.json();
-      state.chatComments = json.comments || [];
-      renderChatMessages(json);
+      let comments = [];
+      let sourceLabel = 'JKT48Connect';
+      try {
+        const params = new URLSearchParams(opts);
+        const res = await fetch(`/api/comments?${params.toString()}`);
+        const json = await res.json();
+        if (Array.isArray(json.comments) && json.comments.length > 0) {
+          comments = json.comments;
+          sourceLabel = json.source || 'JKT48Connect';
+        }
+      } catch {}
+
+      if (comments.length === 0 && opts.mode !== 'local') {
+        const endpoint =
+          opts.platform === 'IDN' && opts.dataId
+            ? `/api/idn-comments/${encodeURIComponent(opts.dataId)}`
+            : opts.roomId
+              ? `/api/showroom-comments/${encodeURIComponent(opts.roomId)}`
+              : '';
+        if (endpoint) {
+          const raw = await fetchJkcDirect(endpoint);
+          const rawList = Array.isArray(raw?.comments) ? raw.comments : [];
+          const startMs = opts.startedAt ? Date.parse(opts.startedAt) : 0;
+          const firstStr = rawList[0]?.source_time || rawList[0]?.observed_at || '';
+          const baseMs = startMs || (firstStr ? Date.parse(firstStr) : 0);
+          comments = rawList.map(c => {
+            const tStr = c.source_time || c.observed_at || '';
+            const tMs = tStr ? Date.parse(tStr) : 0;
+            return {
+              id: c.id || String(c.sequence || Math.random()),
+              user: c.user?.name || 'Fans',
+              avatar: c.user?.avatar_url || '',
+              text: c.comment || '',
+              time: tStr,
+              offsetSeconds: baseMs > 0 && tMs >= baseMs ? Math.round((tMs - baseMs) / 1000) : undefined
+            };
+          });
+        }
+      }
+
+      state.chatComments = comments;
+      renderChatMessages({ source: sourceLabel });
     } catch {
       els.chatMessagesList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px">Gagal memuat komentar.</div>`;
     }
@@ -305,12 +550,13 @@ function destroyHls() {
   els.playerDownloadMp4Btn.classList.add('hidden');
 }
 
-function attachHlsOrMp4ToVideo(url) {
+function attachHlsOrMp4ToVideo(url, fallbackMp4Url = '') {
   if (state.hlsInstance) {
     state.hlsInstance.destroy();
     state.hlsInstance = null;
   }
-  if (url.endsWith('.mp4')) {
+  if (!url) return;
+  if (url.includes('.mp4')) {
     els.hlsPlayer.src = url;
     els.hlsPlayer.play().catch(() => {});
     return;
@@ -323,8 +569,19 @@ function attachHlsOrMp4ToVideo(url) {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       els.hlsPlayer.play().catch(() => {});
     });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal && fallbackMp4Url) {
+        hls.destroy();
+        state.hlsInstance = null;
+        els.hlsPlayer.src = fallbackMp4Url;
+        els.hlsPlayer.play().catch(() => {});
+      }
+    });
   } else if (els.hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
     els.hlsPlayer.src = url;
+    els.hlsPlayer.play().catch(() => {});
+  } else if (fallbackMp4Url) {
+    els.hlsPlayer.src = fallbackMp4Url;
     els.hlsPlayer.play().catch(() => {});
   }
 }
@@ -332,14 +589,7 @@ function attachHlsOrMp4ToVideo(url) {
 async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
   showToast(`Memuat stream & detail ${item.nickname}...`);
   try {
-    const res = await fetch(`/api/replays/${encodeURIComponent(item.dataId)}`);
-    const json = await res.json();
-    if (!json.ok || !json.data) {
-      showToast(`Gagal memuat detail: ${json.error || 'Unknown error'}`);
-      return;
-    }
-
-    const d = json.data;
+    const d = await getReplayDetailWithFallback(item.dataId);
     destroyHls();
     els.playerSection.classList.remove('hidden');
     switchSideTab(defaultSideTab);
@@ -351,7 +601,7 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
     els.playerQualitySelect.classList.add('hidden');
     els.playerRecordBtn.classList.add('hidden');
 
-    // Render Side Panel Subtab 2: Top Gifter & Gifts
+    // Render Side Panel Subtab 2: Top Gifter, Gifts & Daftar Download MP4
     renderSideGiftsAndFans(d);
     // Render Side Panel Subtab 3: Screenshots & Leaderboard
     renderSideScreenshotsAndLeaderboard(d);
@@ -366,43 +616,58 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       startedAt: refStart
     });
 
-    // Tentukan sumber video (R2 HLS m3u8 / R2 MP4 / YouTube Unlisted)
+    // Utamakan file MP4 langsung agar bebas blokir CORS Range preflight di Netlify & semua browser
     const recs = d.recordings || [];
     const mainM3u8 = d.combinedStreamUrl || item.streamUrl || recs[0]?.streamUrl || '';
     const firstMp4 = recs[0]?.mp4Url || '';
 
-    if (firstMp4) {
-      els.playerDownloadMp4Btn.href = firstMp4;
+    const updateDownloadBtnForRec = (recObj, partIdx = 1) => {
+      const mp4 = recObj?.mp4Url || firstMp4;
+      if (!mp4) {
+        els.playerDownloadMp4Btn.classList.add('hidden');
+        return;
+      }
+      const sizeStr = recObj?.sizeBytes ? ` (${formatBytes(recObj.sizeBytes)})` : '';
+      els.playerDownloadMp4Btn.href = buildDownloadMp4Href(mp4, d.title, partIdx);
+      els.playerDownloadMp4Btn.textContent = `⬇ Download MP4${sizeStr}`;
       els.playerDownloadMp4Btn.classList.remove('hidden');
-    }
+    };
 
-    // Jika ada beberapa bagian (parts), tampilkan pemilih bagian
+    updateDownloadBtnForRec(recs[0], 1);
+
+    // Jika ada beberapa bagian (parts), tampilkan pemilih bagian dan auto-next
     if (recs.length > 1) {
       els.playerPartSelect.classList.remove('hidden');
-      els.playerPartSelect.innerHTML =
-        `<option value="combined">Semua Bagian (Gabungan)</option>` +
-        recs
-          .map(
-            (r, i) =>
-              `<option value="${i}">Bagian ${r.part} (${formatSeconds(r.durationSeconds)})</option>`
-          )
-          .join('');
+      els.playerPartSelect.innerHTML = recs
+        .map(
+          (r, i) =>
+            `<option value="${i}">Bagian ${r.part} (${formatSeconds(r.durationSeconds)}${r.sizeBytes ? ' • ' + formatBytes(r.sizeBytes) : ''})</option>`
+        )
+        .join('');
       els.playerPartSelect.onchange = e => {
-        const val = e.target.value;
-        if (val === 'combined' && mainM3u8) {
-          attachHlsOrMp4ToVideo(mainM3u8);
-        } else {
-          const chosen = recs[Number(val)] || recs[0];
-          if (chosen.mp4Url) els.playerDownloadMp4Btn.href = chosen.mp4Url;
-          attachHlsOrMp4ToVideo(chosen.streamUrl || chosen.mp4Url);
+        const idx = Number(e.target.value) || 0;
+        const chosen = recs[idx] || recs[0];
+        updateDownloadBtnForRec(chosen, idx + 1);
+        attachHlsOrMp4ToVideo(chosen.mp4Url || chosen.streamUrl, chosen.mp4Url);
+      };
+      els.hlsPlayer.onended = () => {
+        const curIdx = Number(els.playerPartSelect.value) || 0;
+        if (curIdx + 1 < recs.length) {
+          els.playerPartSelect.value = String(curIdx + 1);
+          const nextRec = recs[curIdx + 1];
+          updateDownloadBtnForRec(nextRec, curIdx + 2);
+          showToast(`Memutar Bagian ${nextRec.part}...`);
+          attachHlsOrMp4ToVideo(nextRec.mp4Url || nextRec.streamUrl, nextRec.mp4Url);
         }
       };
+    } else {
+      els.hlsPlayer.onended = null;
     }
 
-    if (mainM3u8 || firstMp4) {
+    if (firstMp4 || mainM3u8) {
       els.ytPlayer.classList.add('hidden');
       els.hlsPlayer.classList.remove('hidden');
-      attachHlsOrMp4ToVideo(mainM3u8 || firstMp4);
+      attachHlsOrMp4ToVideo(firstMp4 || mainM3u8, firstMp4);
     } else if (d.youtubeId) {
       els.hlsPlayer.classList.add('hidden');
       els.ytPlayer.classList.remove('hidden');
@@ -438,8 +703,35 @@ function renderSideGiftsAndFans(d) {
   const unitLabel = d.pointUnit === 'idn_gold' ? 'Gold' : 'Pts';
   const fans = d.fans || [];
   const gifts = d.giftItems || [];
+  const recs = (d.recordings || []).filter(r => r.mp4Url);
+
+  const downloadSectionHtml = recs.length
+    ? `
+      <div style="margin-bottom:14px;padding:10px;border-radius:10px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.28)">
+        <div style="font-size:12px;font-weight:800;color:#34d399;margin-bottom:8px;text-transform:uppercase">
+          ⬇ Download Video Replay (.MP4) — ${recs.length} Bagian
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${recs
+            .map(
+              (r, i) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:7px">
+                <div style="font-size:12px">
+                  <strong>Bagian ${r.part}</strong>
+                  <span style="color:var(--text-muted);margin-left:6px">${formatSeconds(r.durationSeconds)}${r.sizeBytes ? ' • ' + formatBytes(r.sizeBytes) : ''}</span>
+                </div>
+                <a class="btn-action subtle" href="${escapeHtml(buildDownloadMp4Href(r.mp4Url, d.title, i + 1))}" target="_blank" rel="noopener" download style="padding:4px 9px;font-size:11.5px;text-decoration:none">⬇ MP4</a>
+              </div>
+            `
+            )
+            .join('')}
+        </div>
+      </div>
+    `
+    : '';
 
   els.sideGiftsContent.innerHTML = `
+    ${downloadSectionHtml}
     <div style="margin-bottom:14px">
       <div style="font-size:12px;font-weight:800;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase">
         👑 Top Gifter / Sultan (${fans.length})
@@ -614,13 +906,38 @@ els.closePlayerBtn.addEventListener('click', () => {
 // ============================================================================
 async function loadMembers() {
   try {
-    const res = await fetch('/api/members');
-    const json = await res.json();
-    if (json.ok) {
-      state.members = json.data || [];
-      renderMemberChips();
-      renderOshiPanel();
+    let list = [];
+    try {
+      const res = await fetch('/api/members');
+      const json = await res.json();
+      if (json.ok && Array.isArray(json.data) && json.data.length > 0) {
+        list = json.data;
+      }
+    } catch {}
+
+    if (list.length === 0) {
+      const raw = await fetchJkcDirect('/api/member', { group: 'jkt48' });
+      const arr = Array.isArray(raw) ? raw : raw?.members || [];
+      list = arr
+        .filter(m => !m.is_graduate && (!m.group || m.group === 'jkt48'))
+        .map(m => ({
+          id: m._id || m.url || m.name,
+          name: m.name,
+          nicknames: m.nicknames?.length
+            ? m.nicknames
+            : m.nickname
+              ? [m.nickname]
+              : [m.name.split(' ')[0]],
+          img: normalizeMediaUrlClient(m.img_alt || m.img || ''),
+          url: m.url || '',
+          generation: m.generation || ''
+        }))
+        .sort((a, b) => (a.nicknames[0] || a.name).localeCompare(b.nicknames[0] || b.name));
     }
+
+    state.members = list;
+    renderMemberChips();
+    renderOshiPanel();
   } catch (err) {
     console.error('Gagal memuat daftar member:', err);
   }
@@ -836,12 +1153,54 @@ async function loadReplays(force = false) {
       platform: state.platform,
       refresh: force ? '1' : '0'
     });
-    const res = await fetch(`/api/replays?${params.toString()}`);
-    const json = await res.json();
-    if (json.quota && json.quota.limit) {
-      els.jkcQuotaBadge.textContent = `Kuota API: ${json.quota.remaining}/${json.quota.limit}`;
+    let items = [];
+    try {
+      const res = await fetch(`/api/replays?${params.toString()}`);
+      const json = await res.json();
+      if (json.quota && json.quota.limit) {
+        els.jkcQuotaBadge.textContent = `Kuota API: ${json.quota.remaining}/${json.quota.limit}`;
+      }
+      if (Array.isArray(json.data) && json.data.length > 0) {
+        items = json.data;
+      }
+    } catch {}
+
+    // Fallback langsung dari browser ke api.jkt48connect.app jika di Netlify IP cloud diblokir
+    if (items.length === 0) {
+      const typeParam =
+        state.platform === 'IDN' ? 'idn' : state.platform === 'SHOWROOM' ? 'showroom' : 'all';
+      const hasFilter = Boolean(state.selectedMember.trim() || state.searchQuery.trim());
+      const raw = await fetchJkcDirect('/api/recent', {
+        page: state.page,
+        perpage: hasFilter ? 60 : 24,
+        group: 'jkt48',
+        type: typeParam,
+        sort: 'date',
+        order: '-1'
+      });
+      const rawList = Array.isArray(raw?.recents) ? raw.recents : Array.isArray(raw) ? raw : [];
+      items = rawList.map(formatRecentItemClient);
+      if (state.selectedMember.trim()) {
+        const mLower = state.selectedMember.trim().toLowerCase();
+        items = items.filter(
+          it =>
+            it.nickname.toLowerCase().includes(mLower) ||
+            it.memberName.toLowerCase().includes(mLower) ||
+            it.title.toLowerCase().includes(mLower)
+        );
+      }
+      if (state.searchQuery.trim()) {
+        const qLower = state.searchQuery.trim().toLowerCase();
+        items = items.filter(
+          it =>
+            it.title.toLowerCase().includes(qLower) ||
+            it.memberName.toLowerCase().includes(qLower) ||
+            it.nickname.toLowerCase().includes(qLower)
+        );
+      }
     }
-    state.replays = json.data || [];
+
+    state.replays = items;
     renderReplaysGrid();
 
     const hasFilter = Boolean(state.selectedMember || state.searchQuery);
@@ -901,8 +1260,9 @@ function renderReplaysGrid() {
               <span>👁 ${Number(item.viewers || 0).toLocaleString('id-ID')}</span>
             </div>
             <div class="card-actions">
-              <button class="btn-action" data-play-idx="${idx}" style="flex:1">▶ Tonton + Chat</button>
-              <button class="btn-action subtle" data-gift-idx="${idx}" title="Lihat Top Gifter & Screenshot">🎁 Rekap</button>
+              <button class="btn-action" data-play-idx="${idx}" style="flex:1">▶ Tonton</button>
+              <button class="btn-action subtle" data-dl-idx="${idx}" title="Download Video Replay (.MP4)">⬇ Download</button>
+              <button class="btn-action subtle" data-gift-idx="${idx}" title="Lihat Top Gifter, Download per Bagian & Screenshot">🎁 Rekap</button>
             </div>
           </div>
         </article>
@@ -915,6 +1275,14 @@ function renderReplaysGrid() {
       e.stopPropagation();
       const item = state.replays[Number(btn.dataset.playIdx)];
       if (item) openAndPlayJkcReplay(item, 'comments');
+    });
+  });
+
+  els.replaysGrid.querySelectorAll('[data-dl-idx]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const item = state.replays[Number(btn.dataset.dlIdx)];
+      if (item) triggerDirectDownloadForReplay(item);
     });
   });
 
@@ -986,14 +1354,55 @@ els.refreshBtn.addEventListener('click', () => {
 // ============================================================================
 async function loadNowLive(force = false) {
   try {
-    const res = await fetch(`/api/now-live?refresh=${force ? '1' : '0'}`);
-    const json = await res.json();
-    if (json.ok) {
-      state.nowLive = json.data || [];
-      els.liveCountBadge.textContent = state.nowLive.length;
-      renderLiveMiniBanner();
-      renderLiveGrid();
+    let list = null;
+    try {
+      const res = await fetch(`/api/now-live?refresh=${force ? '1' : '0'}`);
+      const json = await res.json();
+      if (json.ok && Array.isArray(json.data) && json.data.length > 0) {
+        list = json.data;
+      }
+    } catch {}
+
+    if (!list) {
+      try {
+        const raw = await fetchJkcDirect('/api/now_live', { group: 'jkt48' });
+        const arr = Array.isArray(raw) ? raw : raw?.data || [];
+        list = arr.map(item => {
+          const isIdn =
+            item.type === 'idn' ||
+            (item.streaming_url_list?.[0]?.url || '').includes('live-video.net') ||
+            (item.img || '').includes('idn.app') ||
+            Boolean(item.chat_room_id);
+          const streamUrls = (item.streaming_url_list || []).map(s => ({
+            label: s.label || `${s.quality || 720}p`,
+            quality: s.quality || 720,
+            url: s.url
+          }));
+          return {
+            id: `${isIdn ? 'idn' : 'sr'}_${item.room_id || item.url_key}_${item.slug || ''}`,
+            name: item.name || item.url_key || 'Member JKT48',
+            urlKey: item.url_key || '',
+            slug: item.slug || '',
+            roomId: item.room_id,
+            dataId: item.data_id || item.notification_data_id || '',
+            platform: isIdn ? 'IDN' : 'SHOWROOM',
+            img: normalizeMediaUrlClient(item.img || item.img_alt || ''),
+            avatar: normalizeMediaUrlClient(item.img_alt || item.img || ''),
+            startedAt: item.started_at,
+            streamUrls,
+            bestStreamUrl: streamUrls[0]?.url || '',
+            isRecording: false
+          };
+        });
+      } catch {
+        list = [];
+      }
     }
+
+    state.nowLive = list || [];
+    els.liveCountBadge.textContent = state.nowLive.length;
+    renderLiveMiniBanner();
+    renderLiveGrid();
   } catch (err) {
     console.error('Gagal memuat now-live:', err);
   }
