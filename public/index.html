@@ -64,13 +64,14 @@
           <div class="player-controls-top">
             <select id="playerPartSelect" class="quality-select hidden" title="Pilih Bagian Video"></select>
             <select id="playerQualitySelect" class="quality-select hidden" title="Pilih Kualitas"></select>
+            <button id="switchPlayerEngineBtn" class="btn-action subtle hidden" title="Ganti Mode Pemutar (Cinema / Player JKT48Connect)">🔄 Ganti Player</button>
             <button id="toggleChatPanelBtn" class="btn-action subtle">Panel Samping</button>
             <button id="playerRecordBtn" class="btn-action record hidden">
               <span class="rec-dot"></span> Rekam + Chat
             </button>
-            <a id="playerDownloadMp4Btn" href="#" target="_blank" rel="noopener" class="btn-action subtle hidden">
-              ⬇ MP4
-            </a>
+            <button id="playerDownloadMp4Btn" class="btn-action subtle hidden">
+              ⬇ Download MP4
+            </button>
             <button id="closePlayerBtn" class="btn-close-player" title="Tutup Player">&times;</button>
           </div>
         </div>
@@ -240,6 +241,20 @@
       </div>
     </section>
   </main>
+
+  <!-- Modal Download Video Replay -->
+  <div id="downloadModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h3 id="dlModalTitle" style="font-size:16px;font-weight:800">⬇ Download Video Replay</h3>
+          <p id="dlModalSubtitle" style="font-size:12px;color:var(--text-muted);margin-top:2px">Pilih bagian video yang ingin diunduh</p>
+        </div>
+        <button id="closeDlModalBtn" class="btn-close-modal" title="Tutup">&times;</button>
+      </div>
+      <div class="modal-body" id="dlModalBody"></div>
+    </div>
+  </div>
 
   <div id="toastContainer" class="toast-container"></div>
 

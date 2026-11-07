@@ -22,6 +22,11 @@ const state = {
   oshiSearchFilter: '',
   hlsInstance: null,
   currentPlayingLive: null,
+  currentPlayingReplay: null,
+  currentPartIdx: 0,
+  playerEngine: 'cinema',
+  mediaSourceAbort: null,
+  mediaSourceObjectUrl: null,
   chatVisible: true,
   activeSideTab: 'comments',
   chatComments: [],
@@ -47,6 +52,7 @@ const els = {
   playerTitle: document.getElementById('playerTitle'),
   playerPartSelect: document.getElementById('playerPartSelect'),
   playerQualitySelect: document.getElementById('playerQualitySelect'),
+  switchPlayerEngineBtn: document.getElementById('switchPlayerEngineBtn'),
   toggleChatPanelBtn: document.getElementById('toggleChatPanelBtn'),
   playerRecordBtn: document.getElementById('playerRecordBtn'),
   playerDownloadMp4Btn: document.getElementById('playerDownloadMp4Btn'),
@@ -54,6 +60,12 @@ const els = {
   ytPlayer: document.getElementById('ytPlayer'),
   hlsPlayer: document.getElementById('hlsPlayer'),
   playerFooterInfo: document.getElementById('playerFooterInfo'),
+
+  downloadModal: document.getElementById('downloadModal'),
+  dlModalTitle: document.getElementById('dlModalTitle'),
+  dlModalSubtitle: document.getElementById('dlModalSubtitle'),
+  dlModalBody: document.getElementById('dlModalBody'),
+  closeDlModalBtn: document.getElementById('closeDlModalBtn'),
 
   sideSubtabs: document.querySelectorAll('.side-subtab'),
   sidePanelComments: document.getElementById('sidePanel-comments'),
@@ -317,33 +329,81 @@ async function getReplayDetailWithFallback(dataId) {
   return formatReplayDetailClient(raw);
 }
 
-async function triggerDirectDownloadForReplay(item) {
-  showToast(`Menyiapkan link download video ${item.nickname}...`);
+async function openDownloadModal(item) {
+  els.downloadModal.classList.remove('hidden');
+  els.dlModalTitle.textContent = `⬇ Download: ${item.nickname || item.memberName}`;
+  els.dlModalSubtitle.textContent = item.title || 'Memuat link rekaman...';
+  els.dlModalBody.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:16px;text-align:center">Menyiapkan file rekaman...</div>`;
+
   try {
     const d = await getReplayDetailWithFallback(item.dataId);
-    const recs = d.recordings || [];
-    const firstMp4 = recs[0]?.mp4Url || '';
-    if (!firstMp4) {
-      showToast('File MP4 belum tersedia untuk sesi ini.');
+    const recs = (d.recordings || []).filter(r => r.mp4Url);
+    if (recs.length === 0) {
+      els.dlModalBody.innerHTML = `
+        <div style="color:var(--text-muted);font-size:13px;padding:16px;text-align:center">
+          Rekaman MP4 belum tersedia untuk sesi ini (masih dalam pemrosesan server R2).
+        </div>
+      `;
       return;
     }
-    const dlUrl = buildDownloadMp4Href(firstMp4, d.title, 1);
-    const a = document.createElement('a');
-    a.href = dlUrl;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    a.download = `${d.nickname}_JKT48_Replay.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    if (recs.length > 1) {
-      showToast(`Mengunduh Bagian 1 (${recs.length} bagian tersedia di dalam Player).`);
-    } else {
-      showToast(`Download video ${d.nickname} dimulai!`);
-    }
+
+    const isLocal = isLocalhostEnv();
+    els.dlModalBody.innerHTML = `
+      <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5">
+        ${isLocal 
+          ? 'Karena Anda membuka dari <strong>localhost</strong>, klik tombol di bawah untuk langsung mengunduh file video ke PC Anda.' 
+          : 'File rekaman disimpan langsung di Cloudflare R2 JKT48Connect. Klik tombol di bawah untuk mengunduh:'}
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${recs.map((r, i) => {
+          const directUrl = r.mp4Url + (r.mp4Url.includes('?') ? '&' : '?') + 'v=2';
+          const localUrl = `/api/download-mp4?url=${encodeURIComponent(r.mp4Url)}&name=${encodeURIComponent(`${(d.nickname || 'JKT48').replace(/[^a-zA-Z0-9_-]/g, '_')}_Part${r.part}`)}`;
+          const playerUrl = r.playerUrl || (r.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${r.run}` : '');
+          const sizeStr = r.sizeBytes ? formatBytes(r.sizeBytes) : '';
+          const durStr = r.durationSeconds ? formatSeconds(r.durationSeconds) : '';
+
+          return `
+            <div class="dl-part-card">
+              <div class="dl-part-header">
+                <div>
+                  <strong>Bagian ${r.part}</strong>
+                  <span style="color:var(--text-muted);font-size:11.5px;margin-left:6px">${durStr} ${sizeStr ? '• ' + sizeStr : ''}</span>
+                </div>
+              </div>
+              <div class="dl-btn-row">
+                ${isLocal ? `
+                  <a class="btn-action" href="${escapeHtml(localUrl)}" style="flex:1;text-align:center;text-decoration:none">
+                    ⬇ Download Langsung (.mp4)
+                  </a>
+                ` : `
+                  <a class="btn-action" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">
+                    ⬇ Buka / Download MP4
+                  </a>
+                  ${playerUrl ? `
+                    <a class="btn-action subtle" href="${escapeHtml(playerUrl)}" target="_blank" rel="noopener" style="text-decoration:none">
+                      ↗ Halaman Unduh Resmi
+                    </a>
+                  ` : ''}
+                `}
+              </div>
+              ${!isLocal ? `
+                <div style="font-size:11px;color:var(--text-muted)">
+                  💡 <em>Tips di HP / Browser: Jika video memutar bukannya mengunduh, tahan tombol di atas lalu pilih <strong>"Download link"</strong> (atau di player video klik ⋮ &rarr; Download).</em>
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
   } catch (err) {
-    showToast(`Gagal mengunduh video: ${err.message}`);
+    els.dlModalBody.innerHTML = `<div style="color:var(--accent);font-size:13px;padding:16px">Gagal memuat link download: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+async function triggerDirectDownloadForReplay(item) {
+  openDownloadModal(item);
 }
 
 // ============================================================================
@@ -539,6 +599,14 @@ els.hlsPlayer.addEventListener('timeupdate', () => {
 // ============================================================================
 function destroyHls() {
   stopChatPolling();
+  if (state.mediaSourceAbort) {
+    state.mediaSourceAbort.abort();
+    state.mediaSourceAbort = null;
+  }
+  if (state.mediaSourceObjectUrl) {
+    URL.revokeObjectURL(state.mediaSourceObjectUrl);
+    state.mediaSourceObjectUrl = null;
+  }
   if (state.hlsInstance) {
     state.hlsInstance.destroy();
     state.hlsInstance = null;
@@ -548,9 +616,128 @@ function destroyHls() {
   els.ytPlayer.src = 'about:blank';
   els.playerPartSelect.classList.add('hidden');
   els.playerDownloadMp4Btn.classList.add('hidden');
+  els.switchPlayerEngineBtn.classList.add('hidden');
 }
 
-function attachHlsOrMp4ToVideo(url, fallbackMp4Url = '') {
+async function startMediaSourceStream(video, source, signal) {
+  if (!window.MediaSource) {
+    throw new Error('MediaSource not supported');
+  }
+  if (state.mediaSourceObjectUrl) {
+    URL.revokeObjectURL(state.mediaSourceObjectUrl);
+    state.mediaSourceObjectUrl = null;
+  }
+  const media = new MediaSource();
+  state.mediaSourceObjectUrl = URL.createObjectURL(media);
+  video.src = state.mediaSourceObjectUrl;
+
+  await new Promise(resolve => media.addEventListener('sourceopen', resolve, { once: true }));
+  const response = await fetch(source, { signal });
+  if (!response.ok) throw Error('media_http_' + response.status);
+
+  const reader = response.body.getReader();
+  let chunk = new Uint8Array(), position = 0;
+  async function read(n) {
+    const out = new Uint8Array(n);
+    let at = 0;
+    while (at < n) {
+      if (position === chunk.length) {
+        const item = await reader.read();
+        if (item.done) {
+          if (!at) return null;
+          throw Error('media_truncated');
+        }
+        chunk = item.value;
+        position = 0;
+      }
+      const take = Math.min(n - at, chunk.length - position);
+      out.set(chunk.subarray(position, position + take), at);
+      at += take;
+      position += take;
+    }
+    return out;
+  }
+
+  const join = (a, b) => {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a);
+    out.set(b, a.length);
+    return out;
+  };
+
+  let init = new Uint8Array(), buffer, pending;
+  const append = bytes => new Promise((resolve, reject) => {
+    const clean = () => {
+      buffer.removeEventListener('updateend', done);
+      buffer.removeEventListener('error', failed);
+    };
+    const done = () => { clean(); resolve(); };
+    const failed = () => { clean(); reject(Error('media_append_failed')); };
+    buffer.addEventListener('updateend', done);
+    buffer.addEventListener('error', failed);
+    buffer.appendBuffer(bytes);
+  });
+
+  while (!signal.aborted) {
+    const head = await read(8);
+    if (!head) break;
+    const size = new DataView(head.buffer).getUint32(0);
+    const kind = String.fromCharCode(...head.subarray(4));
+    if (size < 8 || size > 33554432) throw Error('media_box_invalid');
+    const body = await read(size - 8);
+    if (!body) throw Error('media_truncated');
+    const box = join(head, body);
+
+    if (kind === 'ftyp') {
+      init = box;
+    } else if (kind === 'moov') {
+      let codec;
+      for (let i = 0; i < box.length - 8; i++) {
+        if (String.fromCharCode(...box.subarray(i, i + 4)) === 'avcC') {
+          codec = 'avc1.' + Array.from(box.subarray(i + 5, i + 8), b => b.toString(16).padStart(2, '0')).join('');
+          break;
+        }
+      }
+      if (!codec) throw Error('media_codec_missing');
+      const audio = String.fromCharCode(...box).includes('mp4a');
+      const mime = 'video/mp4; codecs="' + codec + (audio ? ',mp4a.40.2' : '') + '"';
+      if (!MediaSource.isTypeSupported(mime)) {
+        await reader.cancel();
+        throw Error('mime_not_supported');
+      }
+      buffer = media.addSourceBuffer(mime);
+      await append(join(init, box));
+      for (let i = 0; i < box.length - 32; i++) {
+        if (String.fromCharCode(...box.subarray(i, i + 4)) === 'mvhd') {
+          const v = new DataView(box.buffer);
+          const version = box[i + 4];
+          const scale = v.getUint32(i + (version === 1 ? 24 : 16));
+          const duration = version === 1 ? Number(v.getBigUint64(i + 28)) : v.getUint32(i + 20);
+          if (scale && duration) media.duration = duration / scale;
+          break;
+        }
+      }
+    } else if (kind === 'moof') {
+      pending = box;
+    } else if (kind === 'mdat' && pending && buffer) {
+      while (buffer.buffered.length && buffer.buffered.end(buffer.buffered.length - 1) - video.currentTime > 45 && !signal.aborted) {
+        await new Promise(r => setTimeout(r, 250));
+      }
+      if (signal.aborted) break;
+      if (video.currentTime > 120 && buffer.buffered.length && buffer.buffered.start(0) < video.currentTime - 90) {
+        await new Promise(resolve => {
+          buffer.addEventListener('updateend', resolve, { once: true });
+          buffer.remove(0, video.currentTime - 60);
+        });
+      }
+      await append(join(pending, box));
+      pending = null;
+    }
+  }
+  if (!signal.aborted && media.readyState === 'open') media.endOfStream();
+}
+
+function attachHlsOrMp4ToVideo(url) {
   if (state.hlsInstance) {
     state.hlsInstance.destroy();
     state.hlsInstance = null;
@@ -569,19 +756,8 @@ function attachHlsOrMp4ToVideo(url, fallbackMp4Url = '') {
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       els.hlsPlayer.play().catch(() => {});
     });
-    hls.on(Hls.Events.ERROR, (_, data) => {
-      if (data.fatal && fallbackMp4Url) {
-        hls.destroy();
-        state.hlsInstance = null;
-        els.hlsPlayer.src = fallbackMp4Url;
-        els.hlsPlayer.play().catch(() => {});
-      }
-    });
   } else if (els.hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
     els.hlsPlayer.src = url;
-    els.hlsPlayer.play().catch(() => {});
-  } else if (fallbackMp4Url) {
-    els.hlsPlayer.src = fallbackMp4Url;
     els.hlsPlayer.play().catch(() => {});
   }
 }
@@ -591,6 +767,8 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
   try {
     const d = await getReplayDetailWithFallback(item.dataId);
     destroyHls();
+    state.currentPlayingReplay = d;
+    state.currentPartIdx = 0;
     els.playerSection.classList.remove('hidden');
     switchSideTab(defaultSideTab);
 
@@ -616,26 +794,26 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       startedAt: refStart
     });
 
-    // Utamakan file MP4 langsung agar bebas blokir CORS Range preflight di Netlify & semua browser
     const recs = d.recordings || [];
-    const mainM3u8 = d.combinedStreamUrl || item.streamUrl || recs[0]?.streamUrl || '';
-    const firstMp4 = recs[0]?.mp4Url || '';
 
-    const updateDownloadBtnForRec = (recObj, partIdx = 1) => {
-      const mp4 = recObj?.mp4Url || firstMp4;
-      if (!mp4) {
-        els.playerDownloadMp4Btn.classList.add('hidden');
-        return;
-      }
-      const sizeStr = recObj?.sizeBytes ? ` (${formatBytes(recObj.sizeBytes)})` : '';
-      els.playerDownloadMp4Btn.href = buildDownloadMp4Href(mp4, d.title, partIdx);
-      els.playerDownloadMp4Btn.textContent = `⬇ Download MP4${sizeStr}`;
-      els.playerDownloadMp4Btn.classList.remove('hidden');
+    // Setup tombol download modal
+    els.playerDownloadMp4Btn.classList.remove('hidden');
+    els.playerDownloadMp4Btn.onclick = () => openDownloadModal(d);
+
+    // Setup tombol ganti engine player (Cinema / Official)
+    els.switchPlayerEngineBtn.classList.remove('hidden');
+    const updateSwitchEngineLabel = () => {
+      els.switchPlayerEngineBtn.textContent =
+        state.playerEngine === 'cinema' ? '🎬 Mode Player Asli' : '⚡ Mode Cinema (Sync Chat)';
+    };
+    updateSwitchEngineLabel();
+    els.switchPlayerEngineBtn.onclick = () => {
+      state.playerEngine = state.playerEngine === 'cinema' ? 'official' : 'cinema';
+      updateSwitchEngineLabel();
+      playPart(state.currentPartIdx);
     };
 
-    updateDownloadBtnForRec(recs[0], 1);
-
-    // Jika ada beberapa bagian (parts), tampilkan pemilih bagian dan auto-next
+    // Setup pemilih bagian jika multi-part
     if (recs.length > 1) {
       els.playerPartSelect.classList.remove('hidden');
       els.playerPartSelect.innerHTML = recs
@@ -646,37 +824,88 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
         .join('');
       els.playerPartSelect.onchange = e => {
         const idx = Number(e.target.value) || 0;
-        const chosen = recs[idx] || recs[0];
-        updateDownloadBtnForRec(chosen, idx + 1);
-        attachHlsOrMp4ToVideo(chosen.mp4Url || chosen.streamUrl, chosen.mp4Url);
-      };
-      els.hlsPlayer.onended = () => {
-        const curIdx = Number(els.playerPartSelect.value) || 0;
-        if (curIdx + 1 < recs.length) {
-          els.playerPartSelect.value = String(curIdx + 1);
-          const nextRec = recs[curIdx + 1];
-          updateDownloadBtnForRec(nextRec, curIdx + 2);
-          showToast(`Memutar Bagian ${nextRec.part}...`);
-          attachHlsOrMp4ToVideo(nextRec.mp4Url || nextRec.streamUrl, nextRec.mp4Url);
-        }
+        playPart(idx);
       };
     } else {
-      els.hlsPlayer.onended = null;
+      els.playerPartSelect.classList.add('hidden');
     }
 
-    if (firstMp4 || mainM3u8) {
+    async function playPart(idx) {
+      state.currentPartIdx = idx;
+      if (recs.length > 1) {
+        els.playerPartSelect.value = String(idx);
+      }
+      const chosen = recs[idx] || recs[0];
+      if (!chosen) {
+        if (d.youtubeId) {
+          els.hlsPlayer.classList.add('hidden');
+          els.ytPlayer.classList.remove('hidden');
+          els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&rel=0`;
+        } else {
+          showToast('Video replay sesi ini masih sedang diproses oleh server R2 JKT48Connect.');
+        }
+        return;
+      }
+
+      const playerUrl =
+        chosen.playerUrl || (chosen.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${chosen.run}` : '');
+
+      if (state.playerEngine === 'official' && playerUrl) {
+        if (state.mediaSourceAbort) {
+          state.mediaSourceAbort.abort();
+          state.mediaSourceAbort = null;
+        }
+        els.hlsPlayer.pause();
+        els.hlsPlayer.classList.add('hidden');
+        els.ytPlayer.classList.remove('hidden');
+        els.ytPlayer.src = playerUrl;
+        return;
+      }
+
+      // Default: Mode Cinema Player (MediaSource chunked streaming reader)
       els.ytPlayer.classList.add('hidden');
+      els.ytPlayer.src = 'about:blank';
       els.hlsPlayer.classList.remove('hidden');
-      attachHlsOrMp4ToVideo(firstMp4 || mainM3u8, firstMp4);
-    } else if (d.youtubeId) {
-      els.hlsPlayer.classList.add('hidden');
-      els.ytPlayer.classList.remove('hidden');
-      els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&rel=0`;
-    } else {
-      els.hlsPlayer.classList.add('hidden');
-      els.ytPlayer.classList.add('hidden');
-      showToast('Video replay sesi ini masih sedang diproses oleh server R2 JKT48Connect.');
+
+      if (state.mediaSourceAbort) {
+        state.mediaSourceAbort.abort();
+        state.mediaSourceAbort = null;
+      }
+      const abortCtrl = new AbortController();
+      state.mediaSourceAbort = abortCtrl;
+
+      const mp4Url = chosen.mp4Url
+        ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
+        : '';
+
+      els.hlsPlayer.onended = () => {
+        if (state.currentPartIdx + 1 < recs.length) {
+          showToast(`Lanjut memutar Bagian ${recs[state.currentPartIdx + 1].part}...`);
+          playPart(state.currentPartIdx + 1);
+        }
+      };
+
+      try {
+        if (!mp4Url) throw new Error('No MP4 URL');
+        await startMediaSourceStream(els.hlsPlayer, mp4Url, abortCtrl.signal);
+        els.hlsPlayer.play().catch(() => {});
+      } catch (err) {
+        if (abortCtrl.signal.aborted) return;
+        console.warn('Cinema player fallback ke official embed:', err);
+        if (playerUrl) {
+          state.playerEngine = 'official';
+          updateSwitchEngineLabel();
+          els.hlsPlayer.classList.add('hidden');
+          els.ytPlayer.classList.remove('hidden');
+          els.ytPlayer.src = playerUrl;
+        } else if (mp4Url) {
+          els.hlsPlayer.src = mp4Url;
+          els.hlsPlayer.play().catch(() => {});
+        }
+      }
     }
+
+    playPart(0);
 
     const dateLabel = d.startedAt
       ? new Date(d.startedAt).toLocaleString('id-ID', {
@@ -708,8 +937,11 @@ function renderSideGiftsAndFans(d) {
   const downloadSectionHtml = recs.length
     ? `
       <div style="margin-bottom:14px;padding:10px;border-radius:10px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.28)">
-        <div style="font-size:12px;font-weight:800;color:#34d399;margin-bottom:8px;text-transform:uppercase">
-          ⬇ Download Video Replay (.MP4) — ${recs.length} Bagian
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:800;color:#34d399;text-transform:uppercase">
+            ⬇ Video Replay (.MP4) — ${recs.length} Bagian
+          </div>
+          <button type="button" class="btn-action subtle" id="openSideDlModalBtn" style="padding:3px 8px;font-size:11px">Pilihan Unduh &rarr;</button>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px">
           ${recs
@@ -720,7 +952,7 @@ function renderSideGiftsAndFans(d) {
                   <strong>Bagian ${r.part}</strong>
                   <span style="color:var(--text-muted);margin-left:6px">${formatSeconds(r.durationSeconds)}${r.sizeBytes ? ' • ' + formatBytes(r.sizeBytes) : ''}</span>
                 </div>
-                <a class="btn-action subtle" href="${escapeHtml(buildDownloadMp4Href(r.mp4Url, d.title, i + 1))}" target="_blank" rel="noopener" download style="padding:4px 9px;font-size:11.5px;text-decoration:none">⬇ MP4</a>
+                <button type="button" class="btn-action subtle" data-side-dl-part="${i}" style="padding:4px 9px;font-size:11.5px">⬇ Unduh</button>
               </div>
             `
             )
@@ -785,6 +1017,13 @@ function renderSideGiftsAndFans(d) {
       }
     </div>
   `;
+
+  const sideDlBtn = els.sideGiftsContent.querySelector('#openSideDlModalBtn');
+  if (sideDlBtn) sideDlBtn.onclick = () => openDownloadModal(d);
+
+  els.sideGiftsContent.querySelectorAll('[data-side-dl-part]').forEach(btn => {
+    btn.onclick = () => openDownloadModal(d);
+  });
 }
 
 function renderSideScreenshotsAndLeaderboard(d) {

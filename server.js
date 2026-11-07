@@ -1041,7 +1041,7 @@ async function handleRequest(req, res) {
     }
 
     // --- API: GET /api/download-mp4?url=...&name=... ---
-    if (pathname === '/api/download-mp4' && req.method === 'GET') {
+    if (pathname === '/api/download-mp4' && (req.method === 'GET' || req.method === 'HEAD')) {
       const targetUrl = normalizeMediaUrl(parsedUrl.searchParams.get('url') || '');
       if (!targetUrl || !isAllowedStreamUrl(targetUrl)) {
         return sendJson(res, 400, { ok: false, error: 'URL video tidak diizinkan' });
@@ -1057,6 +1057,7 @@ async function handleRequest(req, res) {
       try {
         const { Readable } = require('node:stream');
         const upstream = await fetch(targetUrl, {
+          method: req.method,
           headers: { 'User-Agent': USER_AGENT }
         });
         if (!upstream.ok || !upstream.body) {
@@ -1071,6 +1072,7 @@ async function handleRequest(req, res) {
         const cl = upstream.headers.get('content-length');
         if (cl) headers['Content-Length'] = cl;
         res.writeHead(200, headers);
+        if (req.method === 'HEAD') return res.end();
         return Readable.fromWeb(upstream.body).pipe(res);
       } catch {
         res.writeHead(302, { Location: targetUrl });
