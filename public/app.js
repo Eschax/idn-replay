@@ -1,5 +1,5 @@
 // ============================================================================
-// JKT48 Hybrid Replay & DVR Studio - Frontend Controller
+// JKT48 Hybrid Replay & DVR Studio - Frontend Controller (with Chat & JKT48Connect)
 // ============================================================================
 
 const state = {
@@ -10,18 +10,25 @@ const state = {
   fullOnly: true,
   members: [],
   replays: [],
+  jkcRecents: [],
   nowLive: [],
   recordings: [],
   oshiConfig: {
     autoRecordEnabled: true,
-    oshiList: []
+    autoRecordMode: 'oshi',
+    oshiList: [],
+    hasApiKey: false,
+    maskedApiKey: ''
   },
   oshiSearchFilter: '',
   hlsInstance: null,
-  currentPlayingLive: null
+  currentPlayingLive: null,
+  chatVisible: true,
+  chatComments: [],
+  chatMode: 'none', // 'youtube' | 'live' | 'local'
+  chatPollTimer: null
 };
 
-// DOM Elements
 const els = {
   navTabs: document.querySelectorAll('.nav-tab'),
   tabPanels: document.querySelectorAll('.tab-panel'),
@@ -33,17 +40,25 @@ const els = {
   liveCountBadge: document.getElementById('liveCountBadge'),
   recCountBadge: document.getElementById('recCountBadge'),
 
-  // Player
+  // Player & Chat Panel
   playerSection: document.getElementById('playerSection'),
+  playerSplitLayout: document.getElementById('playerSplitLayout'),
   playerPlatformBadge: document.getElementById('playerPlatformBadge'),
   playerTitle: document.getElementById('playerTitle'),
+  playerPartSelect: document.getElementById('playerPartSelect'),
   playerQualitySelect: document.getElementById('playerQualitySelect'),
+  toggleChatPanelBtn: document.getElementById('toggleChatPanelBtn'),
   playerRecordBtn: document.getElementById('playerRecordBtn'),
   playerExternalLink: document.getElementById('playerExternalLink'),
   closePlayerBtn: document.getElementById('closePlayerBtn'),
   ytPlayer: document.getElementById('ytPlayer'),
   hlsPlayer: document.getElementById('hlsPlayer'),
   playerFooterInfo: document.getElementById('playerFooterInfo'),
+  chatPanel: document.getElementById('chatPanel'),
+  chatPanelTitle: document.getElementById('chatPanelTitle'),
+  chatPanelSub: document.getElementById('chatPanelSub'),
+  refreshCommentsBtn: document.getElementById('refreshCommentsBtn'),
+  chatMessagesList: document.getElementById('chatMessagesList'),
 
   // Replays Tab
   liveMiniBanner: document.getElementById('liveMiniBanner'),
@@ -54,13 +69,26 @@ const els = {
   replayResultCounter: document.getElementById('replayResultCounter'),
   replaysGrid: document.getElementById('replaysGrid'),
 
+  // JKT48Connect Tab
+  jkcApiKeyInput: document.getElementById('jkcApiKeyInput'),
+  saveJkcKeyBtn: document.getElementById('saveJkcKeyBtn'),
+  jkcQuotaBanner: document.getElementById('jkcQuotaBanner'),
+  jkcRecentGrid: document.getElementById('jkcRecentGrid'),
+  recentDetailModal: document.getElementById('recentDetailModal'),
+  modalRecentTitle: document.getElementById('modalRecentTitle'),
+  modalRecentBody: document.getElementById('modalRecentBody'),
+  closeRecentModalBtn: document.getElementById('closeRecentModalBtn'),
+
   // Live Tab
   refreshLiveBtn: document.getElementById('refreshLiveBtn'),
   liveGrid: document.getElementById('liveGrid'),
 
-  // Recordings & Oshi Tab
+  // Recordings & Auto-Record Tab
   recordingsList: document.getElementById('recordingsList'),
   autoRecordToggle: document.getElementById('autoRecordToggle'),
+  modeAllRadio: document.getElementById('modeAllRadio'),
+  modeOshiRadio: document.getElementById('modeOshiRadio'),
+  oshiSelectionSection: document.getElementById('oshiSelectionSection'),
   oshiFilterInput: document.getElementById('oshiFilterInput'),
   oshiSelectedTags: document.getElementById('oshiSelectedTags'),
   oshiMemberChecklist: document.getElementById('oshiMemberChecklist'),
@@ -117,6 +145,8 @@ function switchTab(tabName) {
     loadNowLive(true);
   } else if (tabName === 'recordings') {
     loadRecordings();
+  } else if (tabName === 'jkt48connect') {
+    loadJkcRecent();
   }
 }
 
@@ -135,9 +165,135 @@ els.brandHome.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 2. BUILT-IN CINEMA PLAYER (YOUTUBE + HLS LIVE + LOCAL DVR)
+// 2. LIVE & REPLAY COMMENTS ENGINE (SYNCHRONIZED WITH PLAYER)
+// ============================================================================
+function stopChatPolling() {
+  if (state.chatPollTimer) {
+    clearInterval(state.chatPollTimer);
+    state.chatPollTimer = null;
+  }
+}
+
+els.toggleChatPanelBtn.addEventListener('click', () => {
+  state.chatVisible = !state.chatVisible;
+  els.playerSplitLayout.classList.toggle('chat-hidden', !state.chatVisible);
+});
+
+async function loadCommentsForPlayer(opts) {
+  stopChatPolling();
+  state.chatComments = [];
+  state.chatMode = opts.mode;
+  els.chatMessagesList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px">Memuat komentar...</div>`;
+
+  const fetchOnce = async () => {
+    try {
+      const params = new URLSearchParams(opts);
+      const res = await fetch(`/api/comments?${params.toString()}`);
+      const json = await res.json();
+      state.chatComments = json.comments || [];
+      renderChatMessages(json);
+    } catch (err) {
+      els.chatMessagesList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px">Gagal memuat komentar.</div>`;
+    }
+  };
+
+  await fetchOnce();
+
+  if (opts.mode === 'live') {
+    state.chatPollTimer = setInterval(fetchOnce, 4500);
+  }
+
+  els.refreshCommentsBtn.onclick = fetchOnce;
+}
+
+function renderChatMessages(meta = {}) {
+  if (state.chatMode === 'local') {
+    els.chatPanelTitle.textContent = '💬 Replay Komentar (Sinkron)';
+    els.chatPanelSub.textContent = `${state.chatComments.length} komentar terekam • Klik waktu untuk lompat`;
+  } else if (state.chatMode === 'live') {
+    els.chatPanelTitle.textContent = '🔴 Live Chat Stream';
+    els.chatPanelSub.textContent = meta.needApiKey
+      ? 'Isi API Key JKT48Connect untuk chat IDN'
+      : `${state.chatComments.length} komentar terbaru (${meta.source || 'live'})`;
+  } else {
+    els.chatPanelTitle.textContent = '💬 Komentar Penonton';
+    els.chatPanelSub.textContent = `${state.chatComments.length} komentar`;
+  }
+
+  if (state.chatComments.length === 0) {
+    const extraHint = meta.needApiKey
+      ? `<br/><br/>💡 Untuk membaca live chat <strong>IDN Live</strong>, masukkan API Key gratis dari <code>api.jkt48connect.app</code> di tab <strong>Rekap JKT48Connect</strong>.`
+      : '';
+    els.chatMessagesList.innerHTML = `
+      <div style="color:var(--text-muted);font-size:12.5px;padding:14px;line-height:1.5">
+        Belum ada komentar yang tercatat pada tayangan ini.${extraHint}
+      </div>
+    `;
+    return;
+  }
+
+  els.chatMessagesList.innerHTML = state.chatComments
+    .map((c, idx) => {
+      const hasOffset = typeof c.offsetSeconds === 'number';
+      const timeBadge = hasOffset
+        ? `<span class="chat-time-tag" data-seek-sec="${c.offsetSeconds}">[${formatSeconds(c.offsetSeconds)}]</span>`
+        : c.time && c.time.length < 20
+          ? `<span style="color:var(--text-muted);font-size:10.5px;margin-right:5px">${escapeHtml(c.time)}</span>`
+          : '';
+      const avatarHtml = c.avatar
+        ? `<img class="chat-avatar" src="${escapeHtml(c.avatar)}" alt="" loading="lazy" />`
+        : `<div class="chat-avatar" style="display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">${escapeHtml((c.user || 'U').slice(0, 1).toUpperCase())}</div>`;
+
+      return `
+        <div class="chat-msg" data-chat-idx="${idx}" data-offset="${hasOffset ? c.offsetSeconds : -1}">
+          ${avatarHtml}
+          <div style="min-width:0;flex:1">
+            ${timeBadge}
+            <span class="chat-user">${escapeHtml(c.user)}:</span>
+            <span class="chat-text">${escapeHtml(c.text)}</span>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  els.chatMessagesList.querySelectorAll('[data-seek-sec]').forEach(badge => {
+    badge.addEventListener('click', () => {
+      const sec = Number(badge.dataset.seekSec);
+      if (!els.hlsPlayer.classList.contains('hidden')) {
+        els.hlsPlayer.currentTime = sec;
+        els.hlsPlayer.play().catch(() => {});
+      }
+    });
+  });
+
+  if (state.chatMode === 'live') {
+    els.chatMessagesList.scrollTop = els.chatMessagesList.scrollHeight;
+  }
+}
+
+// Sinkronisasi highlight komentar saat video DVR lokal diputar
+els.hlsPlayer.addEventListener('timeupdate', () => {
+  if (state.chatMode !== 'local' || !state.chatComments.length) return;
+  const cur = els.hlsPlayer.currentTime;
+  const nodes = els.chatMessagesList.querySelectorAll('.chat-msg');
+  let lastActiveNode = null;
+  nodes.forEach(node => {
+    const offset = Number(node.dataset.offset);
+    const isCurrent = offset >= 0 && offset <= cur && cur - offset <= 8;
+    node.classList.toggle('active-sync', isCurrent);
+    if (isCurrent) lastActiveNode = node;
+  });
+  if (lastActiveNode) {
+    lastActiveNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+});
+
+// ============================================================================
+// 3. BUILT-IN CINEMA PLAYER (YOUTUBE + HLS LIVE + JKT48CONNECT + LOCAL DVR)
 // ============================================================================
 function destroyHls() {
+  stopChatPolling();
   if (state.hlsInstance) {
     state.hlsInstance.destroy();
     state.hlsInstance = null;
@@ -145,6 +301,7 @@ function destroyHls() {
   els.hlsPlayer.pause();
   els.hlsPlayer.removeAttribute('src');
   els.ytPlayer.src = 'about:blank';
+  els.playerPartSelect.classList.add('hidden');
 }
 
 function playYouTubeReplay(video) {
@@ -162,20 +319,22 @@ function playYouTubeReplay(video) {
 
   els.playerExternalLink.href = `https://www.youtube.com/watch?v=${encodeURIComponent(video.videoId)}`;
   els.playerExternalLink.textContent = 'Buka di YouTube ↗';
+  els.playerExternalLink.classList.remove('hidden');
 
   els.hlsPlayer.classList.add('hidden');
   els.ytPlayer.classList.remove('hidden');
   els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(video.videoId)}?autoplay=1&rel=0`;
 
   els.playerFooterInfo.innerHTML = `
-    <span>Channel Arsip: <strong>${escapeHtml(video.channel || 'YouTube Archive')}</strong></span>
+    <span>Sumber: <strong>${escapeHtml(video.channel || 'YouTube Archive')}</strong></span>
     <span>Diunggah: <strong>${escapeHtml(video.published || 'Baru saja')}</strong> • Durasi: <strong>${escapeHtml(video.duration || '-')}</strong></span>
   `;
 
+  loadCommentsForPlayer({ mode: 'youtube', videoId: video.videoId });
   els.playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, externalUrl, liveObj }) {
+function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, externalUrl, liveObj, recId }) {
   destroyHls();
   state.currentPlayingLive = liveObj || null;
   els.playerSection.classList.remove('hidden');
@@ -183,7 +342,7 @@ function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, externa
   const isIdn = platform === 'IDN';
   els.playerPlatformBadge.className = `platform-pill ${isIdn ? 'idn' : 'sr'}`;
   els.playerPlatformBadge.textContent = directPlaylistUrl
-    ? `${platform} LOCAL DVR`
+    ? `${platform} REPLAY / DVR`
     : `${platform} LIVE`;
   els.playerTitle.textContent = title;
 
@@ -206,11 +365,12 @@ function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, externa
   }
 
   const loadSource = m3u8Url => {
+    if (state.hlsInstance) {
+      state.hlsInstance.destroy();
+      state.hlsInstance = null;
+    }
     if (window.Hls && Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false
-      });
+      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
       state.hlsInstance = hls;
       hls.loadSource(m3u8Url);
       hls.attachMedia(els.hlsPlayer);
@@ -226,14 +386,14 @@ function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, externa
   if (directPlaylistUrl) {
     els.playerQualitySelect.classList.add('hidden');
     loadSource(directPlaylistUrl);
-    els.playerFooterInfo.innerHTML = `<span>Memutar dari rekaman lokal di PC Anda (DVR)</span>`;
+    els.playerFooterInfo.innerHTML = `<span>Memutar tayangan HLS / DVR</span>`;
   } else if (Array.isArray(streamUrls) && streamUrls.length > 0) {
     if (streamUrls.length > 1) {
       els.playerQualitySelect.classList.remove('hidden');
       els.playerQualitySelect.innerHTML = streamUrls
         .map(
           (s, idx) =>
-            `<option value="${ idx }">${escapeHtml(s.label || `${s.quality}p`)}</option>`
+            `<option value="${idx}">${escapeHtml(s.label || `${s.quality}p`)}</option>`
         )
         .join('');
       els.playerQualitySelect.onchange = e => {
@@ -247,8 +407,19 @@ function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, externa
     loadSource(`/api/hls-proxy?url=${encodeURIComponent(firstUrl)}`);
     els.playerFooterInfo.innerHTML = `
       <span>Status: <strong>SEDANG LIVE (${escapeHtml(platform)})</strong></span>
-      <span>Stream diputar melalui Local HLS Proxy</span>
+      <span>Stream &amp; Komentar Real-Time Aktif</span>
     `;
+  }
+
+  if (recId) {
+    loadCommentsForPlayer({ mode: 'local', recId });
+  } else if (liveObj) {
+    loadCommentsForPlayer({
+      mode: 'live',
+      platform: liveObj.platform,
+      roomId: liveObj.roomId || '',
+      dataId: liveObj.dataId || ''
+    });
   }
 
   els.playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -260,7 +431,7 @@ els.closePlayerBtn.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 3. MEMBERS & OSHI MANAGEMENT
+// 4. MEMBERS & AUTO-RECORD CONFIGURATION
 // ============================================================================
 async function loadMembers() {
   try {
@@ -330,6 +501,13 @@ async function loadOshiConfig() {
     if (json.ok && json.data) {
       state.oshiConfig = json.data;
       els.autoRecordToggle.checked = Boolean(state.oshiConfig.autoRecordEnabled);
+      els.modeAllRadio.checked = state.oshiConfig.autoRecordMode === 'all';
+      els.modeOshiRadio.checked = state.oshiConfig.autoRecordMode !== 'all';
+      els.oshiSelectionSection.style.opacity =
+        state.oshiConfig.autoRecordMode === 'all' ? '0.45' : '1';
+      if (state.oshiConfig.maskedApiKey) {
+        els.jkcApiKeyInput.placeholder = `Key Aktif: ${state.oshiConfig.maskedApiKey}`;
+      }
       renderMemberChips();
       renderOshiPanel();
     }
@@ -338,22 +516,33 @@ async function loadOshiConfig() {
   }
 }
 
-async function saveOshiConfig() {
+async function saveOshiConfig(extraPayload = {}) {
   try {
+    const payload = {
+      autoRecordEnabled: state.oshiConfig.autoRecordEnabled,
+      autoRecordMode: state.oshiConfig.autoRecordMode,
+      oshiList: state.oshiConfig.oshiList,
+      ...extraPayload
+    };
     const res = await fetch('/api/oshi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(state.oshiConfig)
+      body: JSON.stringify(payload)
     });
     const json = await res.json();
     if (json.ok) {
       state.oshiConfig = json.data;
+      els.oshiSelectionSection.style.opacity =
+        state.oshiConfig.autoRecordMode === 'all' ? '0.45' : '1';
+      if (state.oshiConfig.maskedApiKey) {
+        els.jkcApiKeyInput.placeholder = `Key Aktif: ${state.oshiConfig.maskedApiKey}`;
+      }
       renderMemberChips();
       renderOshiPanel();
-      showToast('Pengaturan Auto-Record Oshi tersimpan!');
+      showToast('Pengaturan tersimpan!');
     }
   } catch (err) {
-    showToast('Gagal menyimpan pengaturan Oshi');
+    showToast('Gagal menyimpan pengaturan');
   }
 }
 
@@ -361,7 +550,7 @@ function renderOshiPanel() {
   const oshiList = state.oshiConfig.oshiList || [];
 
   if (oshiList.length === 0) {
-    els.oshiSelectedTags.innerHTML = `<span style="font-size:12px;color:var(--text-muted)">Belum ada Oshi dipilih untuk Auto-Record.</span>`;
+    els.oshiSelectedTags.innerHTML = `<span style="font-size:12px;color:var(--text-muted)">Belum ada Oshi spesifik dipilih.</span>`;
   } else {
     els.oshiSelectedTags.innerHTML = oshiList
       .map(
@@ -426,13 +615,291 @@ els.autoRecordToggle.addEventListener('change', () => {
   saveOshiConfig();
 });
 
+[els.modeAllRadio, els.modeOshiRadio].forEach(radio => {
+  radio.addEventListener('change', () => {
+    state.oshiConfig.autoRecordMode = els.modeAllRadio.checked ? 'all' : 'oshi';
+    saveOshiConfig();
+  });
+});
+
 els.oshiFilterInput.addEventListener('input', e => {
   state.oshiSearchFilter = e.target.value;
   renderOshiPanel();
 });
 
 // ============================================================================
-// 4. REPLAY INSTAN LOADER & RENDERER
+// 5. JKT48CONNECT API INTEGRATION (RECENT, UNLISTED REPLAY, GIFTS, SCREENSHOTS)
+// ============================================================================
+els.saveJkcKeyBtn.addEventListener('click', async () => {
+  const val = els.jkcApiKeyInput.value.trim();
+  await saveOshiConfig({ jkt48ConnectApiKey: val });
+  els.jkcApiKeyInput.value = '';
+  loadJkcRecent();
+});
+
+async function loadJkcRecent() {
+  els.jkcRecentGrid.innerHTML = `
+    <div class="state-box">
+      <h3>Memuat rekap live &amp; replay dari JKT48Connect API...</h3>
+      <p>Mengambil data <code>/api/recent</code> beserta link stream replay, gift, dan screenshot.</p>
+    </div>
+  `;
+
+  try {
+    const res = await fetch('/api/jkt48connect/recent?page=1&perpage=16');
+    const json = await res.json();
+
+    if (json.needApiKey) {
+      els.jkcQuotaBanner.classList.add('hidden');
+      els.jkcRecentGrid.innerHTML = `
+        <div class="state-box">
+          <h3>🔑 Masukkan API Key JKT48Connect Gratis Anda</h3>
+          <p style="max-width:620px;margin:8px auto 16px">
+            Sesuai dokumentasi <code>https://api.jkt48connect.app/docs</code>, endpoint <code>/api/recent</code>,
+            replay unlisted IDN/Showroom, rekap gift/gold, dan live chat IDN menggunakan API Key gratis (format <code>jkc_...</code>, kuota gratis 1.000 request/bulan).
+          </p>
+          <a href="https://api.jkt48connect.app/dashboard/keys" target="_blank" rel="noopener" class="btn-action">
+            Buat API Key Gratis di JKT48Connect ↗
+          </a>
+        </div>
+      `;
+      return;
+    }
+
+    if (json.quota && json.quota.limit) {
+      els.jkcQuotaBanner.classList.remove('hidden');
+      els.jkcQuotaBanner.innerHTML = `
+        <span>✅ Terhubung ke <strong>api.jkt48connect.app</strong></span>
+        <span>Sisa Kuota Bulan Ini: <strong>${escapeHtml(json.quota.remaining)} / ${escapeHtml(json.quota.limit)}</strong> (${escapeHtml(json.quota.period || '')})</span>
+      `;
+    }
+
+    const recents = Array.isArray(json.data?.recents)
+      ? json.data.recents
+      : Array.isArray(json.data)
+        ? json.data
+        : [];
+    state.jkcRecents = recents;
+
+    if (recents.length === 0) {
+      els.jkcRecentGrid.innerHTML = `
+        <div class="state-box">
+          <h3>Tidak ada data recent atau API Key tidak valid</h3>
+          <p>${escapeHtml(json.data?.message || 'Periksa kembali API Key Anda.')}</p>
+        </div>
+      `;
+      return;
+    }
+
+    els.jkcRecentGrid.innerHTML = recents
+      .map((item, idx) => {
+        const isIdn = (item.type || '').toLowerCase() === 'idn' || Boolean(item.idn);
+        const memberName =
+          item.member?.name || item.member?.nickname || item.name || 'Member JKT48';
+        const thumb =
+          item.member?.img_alt ||
+          item.member?.img ||
+          item.idn?.image ||
+          item.img ||
+          '';
+        const startDate = item.live_info?.date?.start || item.created_at || '';
+        const durMs = item.live_info?.duration || 0;
+        const durSec = durMs > 10000 ? Math.round(durMs / 1000) : durMs;
+        const viewers = item.live_info?.viewers?.num || item.viewers || 0;
+        const hasReplay = Boolean(
+          item.playback?.stream_url ||
+            item.recording?.stream_url ||
+            item.youtube_replay?.videos?.length
+        );
+
+        return `
+          <article class="video-card">
+            <div class="thumb-wrap">
+              <span class="platform-pill ${isIdn ? 'idn' : 'sr'}">${isIdn ? 'IDN' : 'SHOWROOM'}</span>
+              ${hasReplay ? `<span class="age-badge" style="background:#059669">▶ Replay Ready</span>` : ''}
+              <img src="${escapeHtml(thumb)}" alt="${escapeHtml(memberName)}" loading="lazy" />
+              ${durSec ? `<span class="duration-badge">${formatSeconds(durSec)}</span>` : ''}
+            </div>
+            <div class="card-body">
+              <h3 class="card-title">${escapeHtml(memberName)} ${item.idn?.title ? `— ${escapeHtml(item.idn.title)}` : ''}</h3>
+              <div class="card-meta">
+                <span>📅 ${startDate ? new Date(startDate).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-'}</span>
+                <span>👁 ${Number(viewers).toLocaleString('id-ID')}</span>
+              </div>
+              <div class="card-actions">
+                <button class="btn-action" data-jkc-play="${idx}" style="flex:1">▶ Putar Replay</button>
+                <button class="btn-action subtle" data-jkc-detail="${idx}">🎁 Gift &amp; Foto</button>
+              </div>
+            </div>
+          </article>
+        `;
+      })
+      .join('');
+
+    els.jkcRecentGrid.querySelectorAll('[data-jkc-play]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const item = state.jkcRecents[Number(btn.dataset.jkcPlay)];
+        if (item) playJkcRecentReplay(item);
+      });
+    });
+
+    els.jkcRecentGrid.querySelectorAll('[data-jkc-detail]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const item = state.jkcRecents[Number(btn.dataset.jkcDetail)];
+        if (item) openJkcRecentDetailModal(item);
+      });
+    });
+  } catch (err) {
+    els.jkcRecentGrid.innerHTML = `
+      <div class="state-box">
+        <h3>Gagal memuat dari JKT48Connect</h3>
+        <p>${escapeHtml(err.message)}</p>
+      </div>
+    `;
+  }
+}
+
+async function playJkcRecentReplay(recentItem) {
+  const dataId = recentItem.data_id || recentItem._id;
+  showToast('Mengambil detail stream replay dari JKT48Connect...');
+  try {
+    const res = await fetch(`/api/jkt48connect/recent/${encodeURIComponent(dataId)}`);
+    const json = await res.json();
+    const detail = json.data || recentItem;
+    const isIdn = (detail.type || '').toLowerCase() === 'idn' || Boolean(detail.idn);
+    const platform = isIdn ? 'IDN' : 'SHOWROOM';
+    const memberName = detail.member?.name || detail.member?.nickname || 'Member JKT48';
+
+    // Prioritas 1: playback.stream_url atau recording_session.stream_url atau recording.stream_url (HLS .m3u8)
+    const m3u8Stream =
+      detail.playback?.stream_url ||
+      detail.recording_session?.stream_url ||
+      detail.recording?.stream_url ||
+      detail.recordings?.[0]?.stream_url;
+
+    // Prioritas 2: youtube_replay.videos[] (termasuk video Unlisted yang belum 72 jam!)
+    const ytVideos = detail.youtube_replay?.videos || [];
+
+    if (m3u8Stream) {
+      playHlsStream({
+        title: `${memberName} — Replay JKT48Connect`,
+        platform,
+        directPlaylistUrl: m3u8Stream,
+        externalUrl: ytVideos[0]?.url || ytVideos[0]?.youtube_url || ''
+      });
+      if (ytVideos[0]?.youtube_id) {
+        loadCommentsForPlayer({ mode: 'youtube', videoId: ytVideos[0].youtube_id });
+      }
+      return;
+    }
+
+    if (ytVideos.length > 0 && ytVideos[0].youtube_id) {
+      playYouTubeReplay({
+        videoId: ytVideos[0].youtube_id,
+        title: ytVideos[0].title || `${memberName} Replay`,
+        platform,
+        channel: 'JKT48Connect Unlisted Replay',
+        published: detail.live_info?.date?.start
+          ? new Date(detail.live_info.date.start).toLocaleDateString('id-ID')
+          : ''
+      });
+      return;
+    }
+
+    // Fallback: otomatis cari di indeks Replay Instan berdasarkan nama member
+    showToast('Stream belum tersedia di detail sesi, mencari di arsip cepat...');
+    state.selectedMember = detail.member?.nickname || memberName.split(' ')[0];
+    switchTab('replays');
+    renderMemberChips();
+    loadReplays();
+  } catch (err) {
+    showToast(`Gagal memutar replay: ${err.message}`);
+  }
+}
+
+async function openJkcRecentDetailModal(recentItem) {
+  const dataId = recentItem.data_id || recentItem._id;
+  els.recentDetailModal.classList.remove('hidden');
+  els.modalRecentTitle.textContent = `Memuat detail ${dataId}...`;
+  els.modalRecentBody.innerHTML = `<p style="color:var(--text-muted)">Mengambil rincian gift, leaderboard, dan screenshot...</p>`;
+
+  try {
+    const res = await fetch(`/api/jkt48connect/recent/${encodeURIComponent(dataId)}`);
+    const json = await res.json();
+    const d = json.data || recentItem;
+    const memberName = d.member?.name || d.member?.nickname || 'Member JKT48';
+    els.modalRecentTitle.textContent = `Rekap Live: ${memberName} (${d.type?.toUpperCase() || ''})`;
+
+    const gifts = d.live_info?.gift?.list || [];
+    const ss = d.live_info?.screenshot;
+    const ssUrls = ss?.base_url
+      ? (ss.list || []).slice(0, 12).map(t => `${ss.base_url}/${t}.${ss.format || 'jpg'}`)
+      : [];
+    const lbBanner =
+      d.leaderboard_designs?.jkt48connect?.banner?.url ||
+      d.leaderboard_designs?.photobook?.banner?.url ||
+      '';
+
+    els.modalRecentBody.innerHTML = `
+      ${
+        lbBanner
+          ? `<div>
+              <h4 style="margin-bottom:8px">🏆 Kartu Rekap &amp; Leaderboard</h4>
+              <img src="${escapeHtml(lbBanner)}" alt="Leaderboard" style="width:100%;border-radius:10px;border:1px solid var(--border)" loading="lazy" />
+            </div>`
+          : ''
+      }
+      <div>
+        <h4 style="margin-bottom:8px">🎁 Daftar Gift Teramati (${gifts.length})</h4>
+        ${
+          gifts.length
+            ? `<div class="gift-grid">
+                ${gifts
+                  .slice(0, 18)
+                  .map(
+                    g => `
+                    <div class="gift-item">
+                      ${g.img ? `<img src="${escapeHtml(g.img)}" alt="${escapeHtml(g.name)}" loading="lazy" />` : ''}
+                      <div>
+                        <strong>${escapeHtml(g.name || 'Gift')}</strong>
+                        <div style="color:var(--text-muted)">${g.num || 1}x • ${g.point || 0} pts</div>
+                      </div>
+                    </div>
+                  `
+                  )
+                  .join('')}
+              </div>`
+            : `<p style="color:var(--text-muted);font-size:13px">Rincian item gift belum tersedia untuk sesi ini.</p>`
+        }
+      </div>
+      <div>
+        <h4 style="margin-bottom:8px">📸 Screenshot Momen Live (${ssUrls.length})</h4>
+        ${
+          ssUrls.length
+            ? `<div class="screenshot-strip">
+                ${ssUrls.map(u => `<a href="${escapeHtml(u)}" target="_blank" rel="noopener"><img src="${escapeHtml(u)}" alt="Screenshot" loading="lazy" /></a>`).join('')}
+              </div>`
+            : `<p style="color:var(--text-muted);font-size:13px">Screenshot tidak tersedia.</p>`
+        }
+      </div>
+    `;
+  } catch (err) {
+    els.modalRecentBody.innerHTML = `<p style="color:#f87171">Gagal memuat detail: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+els.closeRecentModalBtn.addEventListener('click', () => {
+  els.recentDetailModal.classList.add('hidden');
+});
+
+els.recentDetailModal.addEventListener('click', e => {
+  if (e.target === els.recentDetailModal) {
+    els.recentDetailModal.classList.add('hidden');
+  }
+});
+
+// ============================================================================
+// 6. REPLAY INSTAN LOADER & RENDERER
 // ============================================================================
 async function loadReplays(force = false) {
   els.replaysGrid.innerHTML = `
@@ -494,7 +961,7 @@ function renderReplaysGrid() {
             <h3 class="card-title" title="${escapeHtml(v.title)}">${escapeHtml(v.title)}</h3>
             <div class="card-meta">
               <span>📺 ${escapeHtml(v.channel || 'Archive')}</span>
-              <span>${escapeHtml(v.views || '')}</span>
+              <span>💬 Putar + Komentar</span>
             </div>
           </div>
         </article>
@@ -510,7 +977,6 @@ function renderReplaysGrid() {
   });
 }
 
-// Filter Toolbar Events
 els.platformBtns.forEach(btn => {
   btn.addEventListener('click', () => {
     state.platform = btn.dataset.platform;
@@ -540,14 +1006,15 @@ els.clearSearchBtn.addEventListener('click', () => {
 });
 
 els.refreshBtn.addEventListener('click', () => {
-  showToast('Memperbarui data live & replay...');
+  showToast('Memperbarui data live, replay & rekaman...');
   loadNowLive(true);
   loadReplays(true);
   loadRecordings();
+  if (state.activeTab === 'jkt48connect') loadJkcRecent();
 });
 
 // ============================================================================
-// 5. SEDANG LIVE MONITOR & TRIGGER RECORD
+// 7. SEDANG LIVE MONITOR & TRIGGER RECORD
 // ============================================================================
 async function loadNowLive(force = false) {
   try {
@@ -618,7 +1085,7 @@ function renderLiveGrid() {
     els.liveGrid.innerHTML = `
       <div class="state-box">
         <h3>Tidak ada member JKT48 yang sedang live saat ini</h3>
-        <p>Anda bisa menonton Replay Instan di tab sebelah, atau mengaktifkan Auto-Record Oshi agar otomatis merekam saat member mulai live.</p>
+        <p>Anda bisa mengaktifkan <strong>Auto-Record Semua Member</strong> di tab Auto-Record DVR agar otomatis merekam begitu ada member yang live.</p>
       </div>
     `;
     return;
@@ -638,12 +1105,12 @@ function renderLiveGrid() {
             <h3 class="card-title">${escapeHtml(item.name)}</h3>
             <div class="card-meta">
               <span>Mulai: ${item.startedAt ? new Date(item.startedAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB' : 'Baru saja'}</span>
-              <span>${escapeHtml(item.streamUrls?.[0]?.label || 'HD')}</span>
+              <span>💬 Live Chat</span>
             </div>
             <div class="card-actions">
-              <button class="btn-action" data-play-live="${idx}" style="flex:1">▶ Tonton Live</button>
+              <button class="btn-action" data-play-live="${idx}" style="flex:1">▶ Tonton + Chat</button>
               <button class="btn-action ${item.isRecording ? 'recording-active' : 'record'}" data-rec-live="${idx}">
-                ${item.isRecording ? '● Sedang Direkam' : '⏺ Rekam'}
+                ${item.isRecording ? '● Direkam' : '⏺ Rekam'}
               </button>
             </div>
           </div>
@@ -685,7 +1152,7 @@ async function triggerRecordLive(liveItem) {
     return;
   }
   try {
-    showToast(`Memulai perekaman ${liveItem.name}...`);
+    showToast(`Memulai perekaman video + chat ${liveItem.name}...`);
     const res = await fetch('/api/record/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -695,7 +1162,8 @@ async function triggerRecordLive(liveItem) {
         platform: liveItem.platform,
         streamUrl: liveItem.bestStreamUrl,
         avatar: liveItem.avatar || liveItem.img,
-        roomId: liveItem.roomId
+        roomId: liveItem.roomId,
+        dataId: liveItem.dataId
       })
     });
     const json = await res.json();
@@ -717,7 +1185,7 @@ els.refreshLiveBtn.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 6. LOCAL DVR RECORDINGS MANAGER
+// 8. LOCAL DVR RECORDINGS MANAGER (VIDEO + SYNCHRONIZED CHAT)
 // ============================================================================
 async function loadRecordings() {
   try {
@@ -738,7 +1206,7 @@ function renderRecordingsList() {
     els.recordingsList.innerHTML = `
       <div class="state-box">
         <h3>Belum ada rekaman lokal</h3>
-        <p>Klik tombol <strong>"Rekam"</strong> pada member yang sedang live, atau pilih Oshi di panel sebelah kanan agar sistem otomatis merekam tanpa tunggu 72 jam.</p>
+        <p>Pilih <strong>"Rekam Otomatis SEMUA Member"</strong> di panel kanan agar setiap member yang live otomatis terekam beserta komentarnya tanpa perlu klik manual.</p>
       </div>
     `;
     return;
@@ -774,13 +1242,13 @@ function renderRecordingsList() {
                 }
               </div>
               <div class="rec-sub">
-                ${escapeHtml(dateStr)} WIB • Durasi: <strong>${formatSeconds(rec.durationSeconds)}</strong> • Ukuran: <strong>${formatBytes(rec.sizeBytes)}</strong>
+                ${escapeHtml(dateStr)} WIB • Durasi: <strong>${formatSeconds(rec.durationSeconds)}</strong> • Ukuran: <strong>${formatBytes(rec.sizeBytes)}</strong> • 💬 <strong>${rec.commentCount || 0} Komentar</strong>
               </div>
             </div>
           </div>
 
           <div class="rec-actions">
-            <button class="btn-action" data-play-rec="${idx}">▶ Putar DVR</button>
+            <button class="btn-action" data-play-rec="${idx}">▶ Putar + Replay Chat</button>
             ${
               isRec
                 ? `<button class="btn-action record" data-stop-rec="${escapeHtml(rec.id)}">⏹ Stop</button>`
@@ -801,7 +1269,8 @@ function renderRecordingsList() {
         playHlsStream({
           title: `Rekaman Lokal: ${rec.memberName} (${new Date(rec.startedAt).toLocaleDateString('id-ID')})`,
           platform: rec.platform,
-          directPlaylistUrl: rec.playlistUrl
+          directPlaylistUrl: rec.playlistUrl,
+          recId: rec.id
         });
       }
     });
@@ -833,12 +1302,11 @@ function renderRecordingsList() {
 }
 
 // ============================================================================
-// 7. INITIALIZATION & PERIODIC POLLING
+// 9. INITIALIZATION & PERIODIC POLLING
 // ============================================================================
 (async function init() {
   await Promise.all([loadOshiConfig(), loadMembers(), loadNowLive(), loadReplays(), loadRecordings()]);
 
-  // Poll status live & rekaman setiap 30 detik
   setInterval(() => {
     loadNowLive();
     if (state.activeTab === 'recordings' || state.recordings.some(r => r.status === 'recording')) {
@@ -846,4 +1314,3 @@ function renderRecordingsList() {
     }
   }, 30000);
 })();
-

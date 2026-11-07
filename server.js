@@ -3,13 +3,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
 
+const IS_VERCEL = Boolean(process.env.VERCEL);
 const PORT = process.env.PORT || 3048;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
-const RECORDINGS_DIR = path.join(__dirname, 'recordings');
+const DATA_DIR = IS_VERCEL ? path.join('/tmp', 'jkt48-data') : path.join(__dirname, 'data');
+const RECORDINGS_DIR = IS_VERCEL ? path.join('/tmp', 'jkt48-recordings') : path.join(__dirname, 'recordings');
 
-for (const dir of [PUBLIC_DIR, DATA_DIR, RECORDINGS_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+for (const dir of [DATA_DIR, RECORDINGS_DIR]) {
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch {}
 }
 
 const OSHI_CONFIG_FILE = path.join(DATA_DIR, 'oshi_config.json');
@@ -17,9 +20,10 @@ const RECORDINGS_META_FILE = path.join(DATA_DIR, 'recordings.json');
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const JKT48CONNECT_BASE = 'https://api.jkt48connect.app';
 
 // ============================================================================
-// 1. STATE & PERSISTENCE (OSHI AUTO-RECORD & LOCAL RECORDINGS)
+// 1. STATE & PERSISTENCE (AUTO-RECORD, JKT48CONNECT API KEY, LOCAL RECORDINGS)
 // ============================================================================
 function loadJson(filePath, fallback) {
   try {
@@ -40,16 +44,21 @@ function saveJson(filePath, data) {
   }
 }
 
-let oshiConfig = loadJson(OSHI_CONFIG_FILE, {
+let appConfig = loadJson(OSHI_CONFIG_FILE, {
   autoRecordEnabled: true,
-  oshiList: [] // array of member nicknames/url_keys (lowercase)
+  autoRecordMode: 'oshi', // 'all' (semua member) atau 'oshi' (hanya yang dipilih)
+  oshiList: [],
+  jkt48ConnectApiKey: process.env.JKT48CONNECT_API_KEY || ''
 });
 
+if (!appConfig.autoRecordMode) appConfig.autoRecordMode = 'oshi';
+if (process.env.JKT48CONNECT_API_KEY && !appConfig.jkt48ConnectApiKey) {
+  appConfig.jkt48ConnectApiKey = process.env.JKT48CONNECT_API_KEY;
+}
+
 let recordingsMeta = loadJson(RECORDINGS_META_FILE, []);
-// Active recording controllers: Map<recId, { stop: Function, meta: Object }>
 const activeRecorders = new Map();
 
-// Mark any previously 'recording' state as 'completed' on startup
 for (const rec of recordingsMeta) {
   if (rec.status === 'recording') {
     rec.status = 'completed';
@@ -57,6 +66,44 @@ for (const rec of recordingsMeta) {
   }
 }
 saveJson(RECORDINGS_META_FILE, recordingsMeta);
+
+function getApiKey() {
+  return (appConfig.jkt48ConnectApiKey || process.env.JKT48CONNECT_API_KEY || '').trim();
+}
+
+async function fetchJkt48Connect(endpointPath, searchParams = {}) {
+  const apiKey = getApiKey();
+  const url = new URL(endpointPath, JKT48CONNECT_BASE);
+  for (const [k, v] of Object.entries(searchParams)) {
+    if (v !== undefined && v !== null && v !== '') {
+      url.searchParams.set(k, String(v));
+    }
+  }
+  const headers = {
+    'User-Agent': USER_AGENT,
+    Accept: 'application/json'
+  };
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+  }
+  const res = await fetch(url.toString(), {
+    headers,
+    signal: AbortSignal.timeout(12000)
+  });
+  const quota = {
+    limit: res.headers.get('x-ratelimit-limit'),
+    remaining: res.headers.get('x-ratelimit-remaining'),
+    period: res.headers.get('x-quota-period')
+  };
+  const text = await res.text();
+  let body = null;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = { raw: text };
+  }
+  return { ok: res.ok, status: res.status, body, quota };
+}
 
 // ============================================================================
 // 2. JKT48 MEMBER DIRECTORY & MATCHER
@@ -118,8 +165,10 @@ async function getMembers() {
     return membersCache.data;
   }
   try {
+    const headers = { 'User-Agent': USER_AGENT };
+    if (getApiKey()) headers['X-API-Key'] = getApiKey();
     const res = await fetch('https://api.crstlnz.my.id/api/member?group=jkt48', {
-      headers: { 'User-Agent': USER_AGENT },
+      headers,
       signal: AbortSignal.timeout(8000)
     });
     if (res.ok) {
@@ -176,18 +225,35 @@ function detectMembersInTitle(title, members) {
 }
 
 // ============================================================================
-// 3. NOW LIVE FETCHER (IDN LIVE & SHOWROOM)
+// 3. NOW LIVE FETCHER (IDN LIVE & SHOWROOM + JKT48CONNECT)
 // ============================================================================
 let nowLiveCache = { data: [], updatedAt: 0 };
 
 async function getNowLive(force = false) {
   const now = Date.now();
-  if (!force && now - nowLiveCache.updatedAt < 20 * 1000) {
+  if (!force && now - nowLiveCache.updatedAt < 18 * 1000) {
     return nowLiveCache.data;
   }
   try {
+    const headers = { 'User-Agent': USER_AGENT };
+    if (getApiKey()) headers['X-API-Key'] = getApiKey();
+
+    // Coba ambil juga notification_data_id dari JKT48Connect jika API Key tersedia
+    let notifMap = new Map();
+    if (getApiKey()) {
+      try {
+        const notifRes = await fetchJkt48Connect('/api/live-notifications');
+        if (notifRes.ok && Array.isArray(notifRes.body?.lives)) {
+          for (const n of notifRes.body.lives) {
+            if (n.room_id) notifMap.set(String(n.room_id), n.data_id);
+            if (n.username) notifMap.set(String(n.username).toLowerCase(), n.data_id);
+          }
+        }
+      } catch {}
+    }
+
     const res = await fetch('https://api.crstlnz.my.id/api/now_live?group=jkt48', {
-      headers: { 'User-Agent': USER_AGENT },
+      headers,
       signal: AbortSignal.timeout(8000)
     });
     if (res.ok) {
@@ -204,12 +270,20 @@ async function getNowLive(force = false) {
             quality: s.quality || 720,
             url: s.url
           }));
+          const dataId =
+            item.data_id ||
+            item.notification_data_id ||
+            notifMap.get(String(item.room_id)) ||
+            notifMap.get(String(item.url_key || '').toLowerCase()) ||
+            '';
           return {
             id: `${isIdn ? 'idn' : 'sr'}_${item.room_id || item.url_key}_${item.slug || ''}`,
             name: item.name || item.url_key || 'Member JKT48',
             urlKey: item.url_key || '',
             slug: item.slug || '',
             roomId: item.room_id,
+            dataId,
+            chatRoomId: item.chat_room_id || '',
             platform: isIdn ? 'IDN' : 'SHOWROOM',
             img: item.img || item.img_alt || '',
             avatar: item.img_alt || item.img || '',
@@ -244,9 +318,102 @@ function isMemberCurrentlyRecording(identifier) {
 }
 
 // ============================================================================
-// 4. INSTANT REPLAY ENGINE (FAST ARCHIVE CHANNELS + CHRONOLOGICAL SEARCH)
+// 4. LIVE COMMENTS FETCHER (SHOWROOM DIRECT + JKT48CONNECT IDN/SR COMMENTS)
 // ============================================================================
-// Channels that upload JKT48 IDN Live & Showroom replays within minutes/hours (no 72h wait!)
+async function fetchLiveComments({ platform, roomId, dataId, after }) {
+  const comments = [];
+
+  // 1. Jika JKT48Connect API Key tersedia, coba ambil dari /api/showroom-comments atau /api/idn-comments
+  if (getApiKey()) {
+    try {
+      if (platform === 'SHOWROOM' && roomId) {
+        const res = await fetchJkt48Connect(`/api/showroom-comments/${encodeURIComponent(roomId)}`, {
+          after
+        });
+        if (res.ok && Array.isArray(res.body?.comments)) {
+          return {
+            ok: true,
+            source: 'jkt48connect-showroom',
+            cursor: res.body.cursor,
+            comments: res.body.comments.map(c => ({
+              id: c.id || String(c.sequence || Math.random()),
+              user: c.user?.name || 'Penonton',
+              avatar: c.user?.avatar_url || '',
+              text: c.comment || '',
+              time: c.observed_at || new Date().toISOString(),
+              sequence: c.sequence
+            }))
+          };
+        }
+      } else if (platform === 'IDN' && dataId) {
+        const res = await fetchJkt48Connect(`/api/idn-comments/${encodeURIComponent(dataId)}`, {
+          after
+        });
+        if (res.ok && Array.isArray(res.body?.comments)) {
+          return {
+            ok: true,
+            source: 'jkt48connect-idn',
+            cursor: res.body.cursor,
+            comments: res.body.comments.map(c => ({
+              id: c.id || String(c.sequence || Math.random()),
+              user: c.user?.name || 'Penonton',
+              avatar: c.user?.avatar_url || '',
+              text: c.comment || '',
+              time: c.source_time || c.observed_at || new Date().toISOString(),
+              sequence: c.sequence
+            }))
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[COMMENTS] Fallback dari JKT48Connect:', err.message);
+    }
+  }
+
+  // 2. Fallback Gratis Tanpa API Key untuk Showroom langsung dari Showroom Public API!
+  if (platform === 'SHOWROOM' && roomId) {
+    try {
+      const srUrl = `https://www.showroom-live.com/api/live/comment_log?room_id=${encodeURIComponent(roomId)}`;
+      const res = await fetch(srUrl, {
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const log = data.comment_log || [];
+        for (const c of log) {
+          // Filter angka 1-50 (counting Showroom)
+          if (/^\d+$/.test(String(c.comment || '').trim()) && Number(c.comment) <= 50) continue;
+          comments.push({
+            id: `${c.created_at}_${c.ua || c.name}`,
+            user: c.name || 'Showroom Viewer',
+            avatar: c.avatar_url || '',
+            text: c.comment || '',
+            time: c.created_at ? new Date(c.created_at * 1000).toISOString() : new Date().toISOString()
+          });
+        }
+        return {
+          ok: true,
+          source: 'showroom-direct',
+          comments
+        };
+      }
+    } catch (err) {
+      console.warn('[COMMENTS] Gagal mengambil comment_log Showroom:', err.message);
+    }
+  }
+
+  return {
+    ok: false,
+    source: 'none',
+    needApiKey: platform === 'IDN' && !getApiKey(),
+    comments: []
+  };
+}
+
+// ============================================================================
+// 5. INSTANT REPLAY ENGINE (FAST ARCHIVE CHANNELS + CHRONOLOGICAL SEARCH)
+// ============================================================================
 const FAST_ARCHIVE_CHANNELS = [
   { handle: '@48DailyLive', name: 'JKT48 Daily Live', defaultPlatform: 'IDN' },
   { handle: '@ShowroomJKT48', name: 'Showroom JKT48', defaultPlatform: 'SHOWROOM' },
@@ -463,6 +630,91 @@ async function searchYouTubeReplays(query, sp = 'CAISAhAB') {
   }
 }
 
+// Fetch comments from a YouTube video (public InnerTube continuation)
+async function fetchYouTubeVideoComments(videoId) {
+  try {
+    const watchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+    const html = await fetch(watchUrl, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8'
+      },
+      signal: AbortSignal.timeout(10000)
+    }).then(r => r.text());
+
+    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+    const initialDataMatch = html.match(/var ytInitialData = (\{[\s\S]*?\});<\/script>/);
+    if (!apiKeyMatch || !initialDataMatch) return [];
+
+    const ytData = JSON.parse(initialDataMatch[1]);
+    const panels = ytData.engagementPanels || [];
+    let token = null;
+
+    const strData = JSON.stringify(panels) + JSON.stringify(ytData.contents || {});
+    const tokenMatch = strData.match(/"continuationCommand":\{"token":"([^"]+)"/);
+    if (tokenMatch) token = tokenMatch[1];
+    if (!token) return [];
+
+    const nextRes = await fetch(
+      `https://www.youtube.com/youtubei/v1/next?key=${apiKeyMatch[1]}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+        body: JSON.stringify({
+          context: {
+            client: { clientName: 'WEB', clientVersion: '2.20260101.00.00', hl: 'id', gl: 'ID' }
+          },
+          continuation: token
+        }),
+        signal: AbortSignal.timeout(10000)
+      }
+    ).then(r => r.json());
+
+    // Cari token ke-2 jika baru header comments
+    const nextStr = JSON.stringify(nextRes);
+    const subTokenMatch = nextStr.match(/"reloadContinuationItemsCommand":\{"targetId":"engagement-panel-comments-section","continuationItems":\[\{"continuationItemRenderer":\{"trigger":"CONTINUATION_TRIGGER_ON_ITEM_SHOWN","continuationEndpoint":\{[\s\S]*?"token":"([^"]+)"/);
+
+    let payloadToParse = nextRes;
+    if (subTokenMatch && !nextStr.includes('commentEntityPayload')) {
+      payloadToParse = await fetch(
+        `https://www.youtube.com/youtubei/v1/next?key=${apiKeyMatch[1]}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+          body: JSON.stringify({
+            context: {
+              client: { clientName: 'WEB', clientVersion: '2.20260101.00.00', hl: 'id', gl: 'ID' }
+            },
+            continuation: subTokenMatch[1]
+          }),
+          signal: AbortSignal.timeout(10000)
+        }
+      ).then(r => r.json());
+    }
+
+    const mutations =
+      payloadToParse?.frameworkUpdates?.entityBatchUpdate?.mutations || [];
+    const comments = [];
+    for (const m of mutations) {
+      const c = m.payload?.commentEntityPayload;
+      if (c) {
+        comments.push({
+          id: c.key || String(Math.random()),
+          user: c.author?.displayName || 'Penonton YouTube',
+          avatar: c.author?.avatarThumbnailUrl || '',
+          text: c.properties?.content?.content || '',
+          time: c.properties?.publishedTime || '',
+          likes: c.toolbar?.likeCountNotliked || ''
+        });
+      }
+    }
+    return comments;
+  } catch (err) {
+    console.warn('[YT-COMMENTS] Gagal memuat komentar YouTube:', err.message);
+    return [];
+  }
+}
+
 let replayFeedCache = { data: [], updatedAt: 0 };
 
 async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly = true, force = false }) {
@@ -486,7 +738,6 @@ async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly 
       const deduped = [];
       for (const v of merged) {
         if (!v || !v.videoId || seen.has(v.videoId)) continue;
-        // Pastikan berkaitan dengan JKT48 / Live
         const lower = v.title.toLowerCase();
         if (!lower.includes('jkt48') && !lower.includes('idn') && !lower.includes('showroom')) {
           continue;
@@ -500,7 +751,6 @@ async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly 
       list = [...deduped];
     }
   } else {
-    // Pencarian spesifik member atau kata kunci
     const searchTerms = [];
     if (member) searchTerms.push(`${member} JKT48`);
     if (query) searchTerms.push(query);
@@ -516,7 +766,6 @@ async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly 
       queriesToRun.push(`Live Showroom ${baseQuery}`);
     }
 
-    // Jika ada di cache channel, sertakan juga yang cocok
     const cachedMatches = (replayFeedCache.data || []).filter(v => {
       const t = v.title.toLowerCase();
       const matchM = !member || t.includes(member.toLowerCase());
@@ -538,12 +787,10 @@ async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly 
     list.sort((a, b) => a.ageScore - b.ageScore);
   }
 
-  // Filter berdasarkan platform
   if (platform && platform !== 'ALL') {
     list = list.filter(v => v.platform.toUpperCase() === platform.toUpperCase());
   }
 
-  // Filter berdasarkan member jika ada
   if (member) {
     const mLower = member.toLowerCase();
     list = list.filter(
@@ -553,7 +800,6 @@ async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly 
     );
   }
 
-  // Filter berdasarkan durasi (full replay >= 5 menit / 300 detik)
   if (fullOnly) {
     list = list.filter(v => v.durationSeconds === 0 || v.durationSeconds >= 300);
   }
@@ -562,7 +808,7 @@ async function getReplays({ query = '', member = '', platform = 'ALL', fullOnly 
 }
 
 // ============================================================================
-// 5. PURE NODE.JS NATIVE HLS STREAM RECORDER (DVR TANPA FFMPEG)
+// 6. PURE NODE.JS NATIVE HLS STREAM + CHAT RECORDER (DVR TANPA FFMPEG)
 // ============================================================================
 async function resolveBestMediaPlaylist(masterUrl) {
   const res = await fetch(masterUrl, {
@@ -572,12 +818,10 @@ async function resolveBestMediaPlaylist(masterUrl) {
   if (!res.ok) throw new Error(`HTTP ${res.status} saat membuka m3u8`);
   const text = await res.text();
 
-  // Jika sudah media playlist (memiliki #EXTINF)
   if (text.includes('#EXTINF:')) {
     return masterUrl;
   }
 
-  // Jika master playlist (#EXT-X-STREAM-INF), pilih bandwidth tertinggi
   const lines = text.split(/\r?\n/);
   let bestUrl = null;
   let bestBw = -1;
@@ -598,8 +842,7 @@ async function resolveBestMediaPlaylist(masterUrl) {
   return bestUrl || masterUrl;
 }
 
-async function startHlsRecording({ memberName, memberKey, platform, streamUrl, avatar, roomId }) {
-  // Cek apakah sudah sedang merekam member ini
+async function startHlsRecording({ memberName, memberKey, platform, streamUrl, avatar, roomId, dataId }) {
   for (const [, active] of activeRecorders) {
     if (active.meta.memberKey === memberKey && active.meta.status === 'recording') {
       return active.meta;
@@ -614,6 +857,8 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
   const recFolder = path.join(RECORDINGS_DIR, recId);
   fs.mkdirSync(recFolder, { recursive: true });
 
+  const startEpochMs = Date.now();
+
   const meta = {
     id: recId,
     memberName: memberName || 'Member JKT48',
@@ -621,13 +866,16 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
     platform: platform || 'IDN',
     avatar: avatar || '',
     roomId: roomId || '',
-    startedAt: new Date().toISOString(),
+    dataId: dataId || '',
+    startedAt: new Date(startEpochMs).toISOString(),
     endedAt: null,
     status: 'recording',
     segmentCount: 0,
+    commentCount: 0,
     durationSeconds: 0,
     sizeBytes: 0,
     playlistUrl: `/recordings/${recId}/index.m3u8`,
+    commentsUrl: `/recordings/${recId}/comments.json`,
     downloadUrl: `/api/recordings/${recId}/download`,
     folderName: recId,
     createdAtStamp: timestamp
@@ -639,6 +887,11 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
   let stopped = false;
   const downloadedSegments = new Set();
   const playlistEntries = [];
+  const recordedComments = [];
+  const seenCommentIds = new Set();
+  const commentsFilePath = path.join(recFolder, 'comments.json');
+
+  fs.writeFileSync(commentsFilePath, '[]', 'utf8');
 
   const writeLocalM3u8 = isEnded => {
     const lines = [
@@ -658,9 +911,43 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
     fs.writeFileSync(path.join(recFolder, 'index.m3u8'), lines.join('\n') + '\n', 'utf8');
   };
 
-  // Tulis header awal
   writeLocalM3u8(false);
 
+  // Loop 1: Rekam Komentar Live secara otomatis bersama video!
+  const commentLoopPromise = (async () => {
+    let cursor = undefined;
+    while (!stopped) {
+      try {
+        const res = await fetchLiveComments({
+          platform: meta.platform,
+          roomId: meta.roomId,
+          dataId: meta.dataId,
+          after: cursor
+        });
+        if (res.ok && Array.isArray(res.comments)) {
+          if (res.cursor) cursor = res.cursor;
+          let added = false;
+          for (const c of res.comments) {
+            if (!c.id || seenCommentIds.has(c.id)) continue;
+            seenCommentIds.add(c.id);
+            const offsetSeconds = Math.max(0, Math.round((Date.now() - startEpochMs) / 1000));
+            recordedComments.push({
+              ...c,
+              offsetSeconds
+            });
+            added = true;
+          }
+          if (added) {
+            meta.commentCount = recordedComments.length;
+            fs.writeFileSync(commentsFilePath, JSON.stringify(recordedComments, null, 2), 'utf8');
+          }
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 4000));
+    }
+  })();
+
+  // Loop 2: Rekam Segmen Video HLS (.ts)
   const loopPromise = (async () => {
     let consecutiveErrors = 0;
     let mediaPlaylistUrl = streamUrl;
@@ -695,7 +982,6 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
             currentInf = durMatch ? parseFloat(durMatch[1]) : 2.0;
           } else if (!line.startsWith('#')) {
             const segAbsUrl = new URL(line, mediaPlaylistUrl).toString();
-            // Gunakan pathname sebagai kunci unik segmen
             const segKey = new URL(segAbsUrl).pathname;
             if (!downloadedSegments.has(segKey)) {
               downloadedSegments.add(segKey);
@@ -736,12 +1022,13 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
       await new Promise(r => setTimeout(r, 2500));
     }
 
+    stopped = true;
     meta.status = 'completed';
     meta.endedAt = new Date().toISOString();
     writeLocalM3u8(true);
     saveJson(RECORDINGS_META_FILE, recordingsMeta);
     activeRecorders.delete(recId);
-    console.log(`[REC] Rekaman selesai: ${meta.memberName} (${meta.segmentCount} segmen)`);
+    console.log(`[REC] Rekaman selesai: ${meta.memberName} (${meta.segmentCount} segmen, ${meta.commentCount} komentar)`);
   })();
 
   const controller = {
@@ -749,7 +1036,8 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
     stop: () => {
       stopped = true;
     },
-    loopPromise
+    loopPromise,
+    commentLoopPromise
   };
 
   activeRecorders.set(recId, controller);
@@ -758,10 +1046,13 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
 }
 
 // ============================================================================
-// 6. AUTO-RECORDER BACKGROUND WATCHER FOR OSHI
+// 7. AUTO-RECORDER BACKGROUND WATCHER (SEMUA MEMBER ATAU KHUSUS OSHI)
 // ============================================================================
-async function checkAutoRecordOshi() {
-  if (!oshiConfig.autoRecordEnabled || !oshiConfig.oshiList?.length) return;
+async function checkAutoRecord() {
+  if (!appConfig.autoRecordEnabled) return;
+  const mode = appConfig.autoRecordMode || 'oshi';
+  if (mode === 'oshi' && (!appConfig.oshiList || appConfig.oshiList.length === 0)) return;
+
   try {
     const liveList = await getNowLive(true);
     for (const live of liveList) {
@@ -769,20 +1060,25 @@ async function checkAutoRecordOshi() {
       const nameLower = (live.name || '').toLowerCase();
       const keyLower = (live.urlKey || '').toLowerCase();
 
-      const isOshi = oshiConfig.oshiList.some(oshi => {
-        const o = oshi.toLowerCase();
-        return nameLower.includes(o) || keyLower.includes(o);
-      });
+      const shouldRecord =
+        mode === 'all' ||
+        (appConfig.oshiList || []).some(oshi => {
+          const o = oshi.toLowerCase();
+          return nameLower.includes(o) || keyLower.includes(o);
+        });
 
-      if (isOshi && !isMemberCurrentlyRecording(live.urlKey || live.name)) {
-        console.log(`[AUTO-RECORD] Oshi terdeteksi sedang live: ${live.name}! Memulai rekaman otomatis...`);
+      if (shouldRecord && !isMemberCurrentlyRecording(live.urlKey || live.name)) {
+        console.log(
+          `[AUTO-RECORD] (${mode.toUpperCase()}) Member terdeteksi sedang live: ${live.name}! Memulai rekaman otomatis...`
+        );
         await startHlsRecording({
           memberName: live.name,
           memberKey: live.urlKey || live.name,
           platform: live.platform,
           streamUrl: live.bestStreamUrl,
           avatar: live.avatar,
-          roomId: live.roomId
+          roomId: live.roomId,
+          dataId: live.dataId
         });
       }
     }
@@ -791,12 +1087,13 @@ async function checkAutoRecordOshi() {
   }
 }
 
-// Jalankan pengecekan otomatis setiap 60 detik
-setInterval(checkAutoRecordOshi, 60 * 1000);
-setTimeout(checkAutoRecordOshi, 5000);
+if (!IS_VERCEL) {
+  setInterval(checkAutoRecord, 45 * 1000);
+  setTimeout(checkAutoRecord, 4000);
+}
 
 // ============================================================================
-// 7. HTTP SERVER & API ROUTES
+// 8. HTTP SERVER & API ROUTES
 // ============================================================================
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -839,7 +1136,7 @@ function readBody(req) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   try {
     const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const pathname = decodeURIComponent(parsedUrl.pathname);
@@ -878,6 +1175,67 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, count: data.length, data });
     }
 
+    // --- API: GET /api/jkt48connect/recent (Daftar Recent + Replay JKT48Connect) ---
+    if (pathname === '/api/jkt48connect/recent' && req.method === 'GET') {
+      if (!getApiKey()) {
+        return sendJson(res, 200, {
+          ok: false,
+          needApiKey: true,
+          error: 'Masukkan API Key JKT48Connect (jkc_...) gratis untuk membuka fitur Recent, Gift, Screenshot & Unlisted Replay.'
+        });
+      }
+      const page = parsedUrl.searchParams.get('page') || '1';
+      const perpage = parsedUrl.searchParams.get('perpage') || '15';
+      const search = parsedUrl.searchParams.get('s') || '';
+      const type = parsedUrl.searchParams.get('type') || '';
+
+      const result = await fetchJkt48Connect('/api/recent', { page, perpage, s: search, type });
+      return sendJson(res, 200, {
+        ok: result.ok,
+        status: result.status,
+        quota: result.quota,
+        data: result.body
+      });
+    }
+
+    // --- API: GET /api/jkt48connect/recent/:id (Detail Recent, Replay Stream, Gifts, Screenshots) ---
+    const recentDetailMatch = pathname.match(/^\/api\/jkt48connect\/recent\/([^/]+)$/);
+    if (recentDetailMatch && req.method === 'GET') {
+      if (!getApiKey()) {
+        return sendJson(res, 401, { ok: false, needApiKey: true, error: 'API Key diperlukan' });
+      }
+      const dataId = recentDetailMatch[1];
+      const result = await fetchJkt48Connect(`/api/recent/${encodeURIComponent(dataId)}`);
+      return sendJson(res, 200, {
+        ok: result.ok,
+        status: result.status,
+        quota: result.quota,
+        data: result.body
+      });
+    }
+
+    // --- API: GET /api/comments (Komentar Live / Replay YouTube / Rekaman Lokal) ---
+    if (pathname === '/api/comments' && req.method === 'GET') {
+      const mode = parsedUrl.searchParams.get('mode') || 'live'; // 'live' | 'youtube' | 'local'
+      if (mode === 'youtube') {
+        const videoId = parsedUrl.searchParams.get('videoId') || '';
+        const comments = await fetchYouTubeVideoComments(videoId);
+        return sendJson(res, 200, { ok: true, source: 'youtube', comments });
+      }
+      if (mode === 'local') {
+        const recId = parsedUrl.searchParams.get('recId') || '';
+        const cFile = path.join(RECORDINGS_DIR, recId, 'comments.json');
+        const comments = loadJson(cFile, []);
+        return sendJson(res, 200, { ok: true, source: 'local-dvr', comments });
+      }
+      const platform = parsedUrl.searchParams.get('platform') || 'SHOWROOM';
+      const roomId = parsedUrl.searchParams.get('roomId') || '';
+      const dataId = parsedUrl.searchParams.get('dataId') || '';
+      const after = parsedUrl.searchParams.get('after') || '';
+      const result = await fetchLiveComments({ platform, roomId, dataId, after });
+      return sendJson(res, 200, result);
+    }
+
     // --- API: GET /api/hls-proxy?url=... ---
     if (pathname === '/api/hls-proxy' && req.method === 'GET') {
       const targetUrl = parsedUrl.searchParams.get('url');
@@ -908,14 +1266,12 @@ const server = http.createServer(async (req, res) => {
 
         if (isM3u8) {
           const text = await upstream.text();
-          // Rewrite semua baris URL relatif/absolut agar melewati /api/hls-proxy
           const rewritten = text
             .split(/\r?\n/)
             .map(line => {
               const trimmed = line.trim();
               if (!trimmed) return line;
               if (trimmed.startsWith('#')) {
-                // Rewrite URI="..." jika ada (misal #EXT-X-KEY atau #EXT-X-MAP)
                 return trimmed.replace(/URI="([^"]+)"/g, (_, uri) => {
                   const abs = new URL(uri, targetUrl).toString();
                   return `URI="/api/hls-proxy?url=${encodeURIComponent(abs)}"`;
@@ -967,7 +1323,8 @@ const server = http.createServer(async (req, res) => {
         platform: body.platform,
         streamUrl: body.streamUrl,
         avatar: body.avatar,
-        roomId: body.roomId
+        roomId: body.roomId,
+        dataId: body.dataId
       });
       return sendJson(res, 200, { ok: true, data: meta });
     }
@@ -1030,20 +1387,43 @@ const server = http.createServer(async (req, res) => {
 
     // --- API: GET & POST /api/oshi ---
     if (pathname === '/api/oshi' && req.method === 'GET') {
-      return sendJson(res, 200, { ok: true, data: oshiConfig });
+      return sendJson(res, 200, {
+        ok: true,
+        data: {
+          ...appConfig,
+          hasApiKey: Boolean(getApiKey()),
+          maskedApiKey: getApiKey()
+            ? `${getApiKey().slice(0, 8)}...${getApiKey().slice(-4)}`
+            : ''
+        }
+      });
     }
     if (pathname === '/api/oshi' && req.method === 'POST') {
       const body = await readBody(req);
       if (typeof body.autoRecordEnabled === 'boolean') {
-        oshiConfig.autoRecordEnabled = body.autoRecordEnabled;
+        appConfig.autoRecordEnabled = body.autoRecordEnabled;
+      }
+      if (body.autoRecordMode === 'all' || body.autoRecordMode === 'oshi') {
+        appConfig.autoRecordMode = body.autoRecordMode;
       }
       if (Array.isArray(body.oshiList)) {
-        oshiConfig.oshiList = [...new Set(body.oshiList.map(s => String(s).trim()).filter(Boolean))];
+        appConfig.oshiList = [...new Set(body.oshiList.map(s => String(s).trim()).filter(Boolean))];
       }
-      saveJson(OSHI_CONFIG_FILE, oshiConfig);
-      // Langsung trigger pengecekan
-      checkAutoRecordOshi();
-      return sendJson(res, 200, { ok: true, data: oshiConfig });
+      if (typeof body.jkt48ConnectApiKey === 'string') {
+        appConfig.jkt48ConnectApiKey = body.jkt48ConnectApiKey.trim();
+      }
+      saveJson(OSHI_CONFIG_FILE, appConfig);
+      checkAutoRecord();
+      return sendJson(res, 200, {
+        ok: true,
+        data: {
+          ...appConfig,
+          hasApiKey: Boolean(getApiKey()),
+          maskedApiKey: getApiKey()
+            ? `${getApiKey().slice(0, 8)}...${getApiKey().slice(-4)}`
+            : ''
+        }
+      });
     }
 
     // --- STATIC: /recordings/... ---
@@ -1058,7 +1438,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, {
         'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': ext === '.m3u8' ? 'no-cache' : 'public, max-age=3600'
+        'Cache-Control': ext === '.m3u8' || ext === '.json' ? 'no-cache' : 'public, max-age=3600'
       });
       return fs.createReadStream(safePath).pipe(res);
     }
@@ -1082,12 +1462,18 @@ const server = http.createServer(async (req, res) => {
     console.error('[SERVER ERROR]', err);
     sendJson(res, 500, { ok: false, error: err.message });
   }
-});
+}
 
-server.listen(PORT, () => {
-  console.log('==============================================================');
-  console.log(` 🎬 JKT48 Hybrid Replay & Live Studio aktif!`);
-  console.log(` 🌐 Buka di browser: http://localhost:${PORT}`);
-  console.log('==============================================================');
-});
+const server = http.createServer(handleRequest);
 
+if (!IS_VERCEL) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('==============================================================');
+    console.log(` 🎬 JKT48 Hybrid Replay & Live Studio aktif!`);
+    console.log(` 💻 Buka di PC     : http://localhost:${PORT}`);
+    console.log(` 📱 Buka di HP WiFi: http://192.168.1.3:${PORT}`);
+    console.log('==============================================================');
+  });
+}
+
+module.exports = handleRequest;

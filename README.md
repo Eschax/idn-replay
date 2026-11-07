@@ -22,3 +22,4 @@ node server.js
 
 Atau klik dua kali file `start.bat` (Windows), lalu buka:
 - **http://localhost:3048**
+
