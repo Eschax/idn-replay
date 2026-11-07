@@ -127,54 +127,65 @@
           </div>
 
           <div class="player-split-layout" id="playerSplitLayout">
-            <div class="video-wrapper" id="videoWrapper">
-              <div id="videoLoadingBadge" class="video-loading-badge hidden">Memuat stream cepat...</div>
-              <iframe
-                id="ytPlayer"
-                class="video-frame hidden"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowfullscreen
-              ></iframe>
-              <video id="hlsPlayer" class="video-frame hidden" controls playsinline preload="auto"></video>
-            </div>
-
-            <!-- Side Panel: Komentar, Top Gifter & Gift, Screenshot -->
-            <aside class="chat-panel" id="chatPanel">
-              <div class="side-subtabs">
-                <button class="side-subtab active" data-sidetab="comments">💬 Komentar</button>
-                <button class="side-subtab" data-sidetab="gifts">🎁 Gift &amp; Fans</button>
-                <button class="side-subtab" data-sidetab="screenshots">📸 Foto &amp; Rekap</button>
+            <!-- Left: Video Player & Controls -->
+            <div class="player-main-col">
+              <div class="video-wrapper" id="videoWrapper">
+                <div id="videoLoadingBadge" class="video-loading-badge hidden">Memuat stream cepat...</div>
+                <iframe
+                  id="ytPlayer"
+                  class="video-frame hidden"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                  allowfullscreen
+                ></iframe>
+                <video id="hlsPlayer" class="video-frame hidden" controls playsinline preload="auto"></video>
               </div>
 
-              <!-- Subtab 1: Comments -->
-              <div id="sidePanel-comments" class="side-subpanel active">
-                <div class="chat-panel-header">
-                  <div class="chat-panel-sub" id="chatPanelSub">Memuat komentar sesi...</div>
-                  <div style="display:flex;align-items:center;gap:6px">
-                    <button id="chatResumeSyncBtn" class="btn-action subtle hidden" style="padding:3px 8px;font-size:11px">⬇ Sync</button>
-                    <button id="refreshCommentsBtn" class="icon-btn" style="width:28px;height:28px" title="Muat Ulang Komentar">↻</button>
+              <!-- Multi-Part Bar & Coverage Info -->
+              <div id="playerPartsBar" class="player-parts-bar hidden"></div>
+              <div class="player-footer" id="playerFooterInfo"></div>
+
+              <!-- Secondary Extras Toggle (Gifts & Screenshots) -->
+              <div class="player-extras-accordion">
+                <div class="extras-nav-btns">
+                  <button type="button" class="btn-action subtle" id="toggleGiftsBtn">🎁 Top Gifter &amp; Hadiah</button>
+                  <button type="button" class="btn-action subtle" id="toggleScreenshotsBtn">📸 Screenshot &amp; Leaderboard</button>
+                </div>
+                <div id="sidePanel-gifts" class="extra-content-box hidden">
+                  <div class="chat-messages" id="sideGiftsContent">
+                    <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat daftar Top Gifter &amp; Gift.</div>
                   </div>
                 </div>
-                <div class="chat-messages" id="chatMessagesList"></div>
+                <div id="sidePanel-screenshots" class="extra-content-box hidden">
+                  <div class="chat-messages" id="sideScreenshotsContent">
+                    <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat Screenshot &amp; Kartu Leaderboard.</div>
+                  </div>
+                </div>
               </div>
+            </div>
 
-              <!-- Subtab 2: Top Gifter & Gifts -->
-              <div id="sidePanel-gifts" class="side-subpanel hidden">
-                <div class="chat-messages" id="sideGiftsContent">
-                  <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat daftar Top Gifter &amp; Gift.</div>
+            <!-- Right: DEDICATED CHAT HISTORY BOX (Kotak Tersendiri di Sebelah Video) -->
+            <aside class="chat-section-dock" id="chatSectionDock">
+              <div class="chat-dock-header">
+                <div class="chat-dock-title">
+                  <span class="chat-dock-icon">💬</span>
+                  <div>
+                    <div class="chat-dock-heading">Riwayat Chat Live</div>
+                    <div class="chat-dock-sub" id="chatPanelSub">Memuat komentar...</div>
+                  </div>
+                </div>
+                <div class="chat-dock-actions">
+                  <button type="button" id="chatResumeSyncBtn" class="btn-chat-sync hidden" title="Kembali Sinkron ke Posisi Video">⬇ Auto-Sync</button>
+                  <button type="button" id="refreshCommentsBtn" class="icon-btn-compact" title="Muat Ulang Komentar">↻</button>
                 </div>
               </div>
 
-              <!-- Subtab 3: Screenshots & Leaderboard -->
-              <div id="sidePanel-screenshots" class="side-subpanel hidden">
-                <div class="chat-messages" id="sideScreenshotsContent">
-                  <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat Screenshot &amp; Kartu Leaderboard.</div>
-                </div>
+              <div class="chat-dock-messages" id="chatMessagesList"></div>
+
+              <div class="chat-dock-footer">
+                <span>💡 Klik waktu <code>[mm:ss]</code> pada chat untuk loncat ke video</span>
               </div>
             </aside>
           </div>
-
-          <div class="player-footer" id="playerFooterInfo"></div>
         </div>
       </section>
 

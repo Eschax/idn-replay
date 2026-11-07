@@ -878,6 +878,23 @@ async function sendTelegramMessage(chatId, htmlText, inlineButtons = [], tokenOv
   return data.result;
 }
 
+function getPublicAppUrl() {
+  const url = (
+    getEnvVar('PUBLIC_APP_URL') ||
+    appConfig.publicAppUrl ||
+    'https://sweet-cajeta-ed2f82.netlify.app'
+  ).replace(/\/+$/, '');
+  if (
+    !url.startsWith('https://') ||
+    url.includes('localhost') ||
+    url.includes('127.0.0.1') ||
+    url.includes('192.168.')
+  ) {
+    return 'https://sweet-cajeta-ed2f82.netlify.app';
+  }
+  return url;
+}
+
 function formatLiveAlertTelegram(live) {
   const startWib = live.startedAt
     ? new Date(live.startedAt).toLocaleTimeString('id-ID', {
@@ -886,11 +903,7 @@ function formatLiveAlertTelegram(live) {
         timeZone: 'Asia/Jakarta'
       }) + ' WIB'
     : 'Baru saja';
-  const appUrl = (
-    appConfig.publicAppUrl ||
-    getEnvVar('PUBLIC_APP_URL') ||
-    'https://sweet-cajeta-ed2f82.netlify.app'
-  ).replace(/\/+$/, '');
+  const appUrl = getPublicAppUrl();
   const nativeUrl = buildNativeLiveUrl(live);
 
   const text = [
@@ -993,11 +1006,7 @@ async function handleTelegramUpdate(update) {
       );
       return;
     }
-    const appUrl = (
-      appConfig.publicAppUrl ||
-      getEnvVar('PUBLIC_APP_URL') ||
-      'https://sweet-cajeta-ed2f82.netlify.app'
-    ).replace(/\/+$/, '');
+    const appUrl = getPublicAppUrl();
     const lines = [`🔴 <b>${lives.length} Member Sedang Live Sekarang:</b>`, ''];
     const buttons = [];
     lives.forEach((l, i) => {
