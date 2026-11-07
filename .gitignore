@@ -2,3 +2,4 @@ node_modules/
 recordings/
 data/recordings.json
 data/oshi_config.json
+.agents/

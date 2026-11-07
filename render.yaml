@@ -8,3 +8,4 @@ services:
     envVars:
       - key: JKT48CONNECT_API_KEY
         value: jkc_82a84efebf4b67b73fa0c20b7096ea8de1e336c8
+
