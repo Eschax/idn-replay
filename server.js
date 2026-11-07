@@ -3,11 +3,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
 
-const IS_VERCEL = Boolean(process.env.VERCEL);
+const IS_SERVERLESS = Boolean(
+  process.env.VERCEL || process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME
+);
 const PORT = process.env.PORT || 3048;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = IS_VERCEL ? path.join('/tmp', 'jkt48-data') : path.join(__dirname, 'data');
-const RECORDINGS_DIR = IS_VERCEL ? path.join('/tmp', 'jkt48-recordings') : path.join(__dirname, 'recordings');
+const DATA_DIR = IS_SERVERLESS ? path.join('/tmp', 'jkt48-data') : path.join(__dirname, 'data');
+const RECORDINGS_DIR = IS_SERVERLESS ? path.join('/tmp', 'jkt48-recordings') : path.join(__dirname, 'recordings');
 
 for (const dir of [DATA_DIR, RECORDINGS_DIR]) {
   try {
@@ -83,7 +85,39 @@ recordingsMeta = recordingsMeta.filter(rec => {
 saveJson(RECORDINGS_META_FILE, recordingsMeta);
 
 function getApiKey() {
-  return (appConfig.jkt48ConnectApiKey || DEFAULT_JKC_API_KEY).trim();
+  const netlifyKey =
+    typeof globalThis.Netlify !== 'undefined' && globalThis.Netlify.env
+      ? globalThis.Netlify.env.get('JKT48CONNECT_API_KEY')
+      : '';
+  return (appConfig.jkt48ConnectApiKey || netlifyKey || process.env.JKT48CONNECT_API_KEY || DEFAULT_JKC_API_KEY).trim();
+}
+
+function isValidRecId(recId) {
+  return typeof recId === 'string' && /^rec_[a-z0-9_-]+$/i.test(recId);
+}
+
+const ALLOWED_STREAM_HOSTS = [
+  'live-video.net',
+  'idn.app',
+  'idn.media',
+  'showroom-live.com',
+  'showroom-cdn.com',
+  'jkt48connect.app',
+  'cloudflarestorage.com',
+  'r2.dev',
+  'akamaized.net',
+  'cloudfront.net'
+];
+
+function isAllowedStreamUrl(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return ALLOWED_STREAM_HOSTS.some(d => host === d || host.endsWith(`.${d}`));
+  } catch {
+    return false;
+  }
 }
 
 function normalizeMediaUrl(url) {
@@ -148,6 +182,7 @@ async function fetchJkt48Connect(endpointPath, searchParams = {}, ttlMs = 20000,
   };
 
   if (res.ok && ttlMs > 0) {
+    if (apiCache.size >= 200) apiCache.delete(apiCache.keys().next().value);
     apiCache.set(cacheKey, { at: now, result });
   }
   return result;
@@ -494,11 +529,13 @@ async function fetchSessionComments({ platform, roomId, dataId, startedAt, after
         true
       );
       if (res.ok && Array.isArray(res.body?.comments)) {
+        const firstStr = res.body.comments[0]?.source_time || res.body.comments[0]?.observed_at || '';
+        const baseMs = startMs || (firstStr ? Date.parse(firstStr) : 0);
         const list = res.body.comments.map(c => {
           const tStr = c.source_time || c.observed_at || '';
           const tMs = tStr ? Date.parse(tStr) : 0;
           const offsetSeconds =
-            startMs > 0 && tMs >= startMs ? Math.round((tMs - startMs) / 1000) : undefined;
+            baseMs > 0 && tMs >= baseMs ? Math.round((tMs - baseMs) / 1000) : undefined;
           return {
             id: c.id || String(c.sequence || Math.random()),
             user: c.user?.name || 'Penonton IDN',
@@ -525,11 +562,13 @@ async function fetchSessionComments({ platform, roomId, dataId, startedAt, after
         true
       );
       if (res.ok && Array.isArray(res.body?.comments) && res.body.comments.length > 0) {
+        const firstStr = res.body.comments[0]?.observed_at || '';
+        const baseMs = startMs || (firstStr ? Date.parse(firstStr) : 0);
         const list = res.body.comments.map(c => {
           const tStr = c.observed_at || '';
           const tMs = tStr ? Date.parse(tStr) : 0;
           const offsetSeconds =
-            startMs > 0 && tMs >= startMs ? Math.round((tMs - startMs) / 1000) : undefined;
+            baseMs > 0 && tMs >= baseMs ? Math.round((tMs - baseMs) / 1000) : undefined;
           return {
             id: c.id || String(c.sequence || Math.random()),
             user: c.user?.name || 'Penonton Showroom',
@@ -803,6 +842,7 @@ async function startHlsRecording({ memberName, memberKey, platform, streamUrl, a
     }
 
     stopped = true;
+    if (finishedStreamUrls.size >= 200) finishedStreamUrls.delete(finishedStreamUrls.values().next().value);
     finishedStreamUrls.add(streamUrl);
     activeRecorders.delete(recId);
 
@@ -878,7 +918,7 @@ async function checkAutoRecord() {
   }
 }
 
-if (!IS_VERCEL) {
+if (!IS_SERVERLESS && require.main === module) {
   setInterval(checkAutoRecord, 45 * 1000);
   setTimeout(checkAutoRecord, 4000);
 }
@@ -981,6 +1021,9 @@ async function handleRequest(req, res) {
       const mode = parsedUrl.searchParams.get('mode') || 'session';
       if (mode === 'local') {
         const recId = parsedUrl.searchParams.get('recId') || '';
+        if (!isValidRecId(recId)) {
+          return sendJson(res, 400, { ok: false, error: 'recId tidak valid' });
+        }
         const cFile = path.join(RECORDINGS_DIR, recId, 'comments.json');
         const comments = loadJson(cFile, []);
         return sendJson(res, 200, { ok: true, source: 'local-dvr', comments });
@@ -997,8 +1040,8 @@ async function handleRequest(req, res) {
     // --- API: GET /api/hls-proxy?url=... ---
     if (pathname === '/api/hls-proxy' && req.method === 'GET') {
       const targetUrl = parsedUrl.searchParams.get('url');
-      if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
-        return sendJson(res, 400, { ok: false, error: 'URL stream tidak valid' });
+      if (!targetUrl || !isAllowedStreamUrl(targetUrl)) {
+        return sendJson(res, 400, { ok: false, error: 'URL stream tidak diizinkan' });
       }
       try {
         const upstream = await fetch(targetUrl, {
@@ -1102,6 +1145,9 @@ async function handleRequest(req, res) {
     const downloadMatch = pathname.match(/^\/api\/recordings\/([^/]+)\/download$/);
     if (downloadMatch && req.method === 'GET') {
       const recId = downloadMatch[1];
+      if (!isValidRecId(recId)) {
+        return sendJson(res, 400, { ok: false, error: 'recId tidak valid' });
+      }
       const meta = recordingsMeta.find(r => r.id === recId);
       const recFolder = path.join(RECORDINGS_DIR, recId);
       if (!meta || !fs.existsSync(recFolder)) {
@@ -1120,8 +1166,10 @@ async function handleRequest(req, res) {
       });
 
       for (const f of files) {
-        const chunk = fs.readFileSync(path.join(recFolder, f));
-        res.write(chunk);
+        const chunk = await fs.promises.readFile(path.join(recFolder, f));
+        if (!res.write(chunk)) {
+          await new Promise(r => res.once('drain', r));
+        }
       }
       return res.end();
     }
@@ -1130,6 +1178,9 @@ async function handleRequest(req, res) {
     const deleteMatch = pathname.match(/^\/api\/recordings\/([^/]+)$/);
     if (deleteMatch && req.method === 'DELETE') {
       const recId = deleteMatch[1];
+      if (!isValidRecId(recId)) {
+        return sendJson(res, 400, { ok: false, error: 'recId tidak valid' });
+      }
       if (activeRecorders.has(recId)) {
         activeRecorders.get(recId).stop();
         activeRecorders.delete(recId);
@@ -1226,7 +1277,7 @@ async function handleRequest(req, res) {
 
 const server = http.createServer(handleRequest);
 
-if (!IS_VERCEL) {
+if (!IS_SERVERLESS && require.main === module) {
   server.listen(PORT, '0.0.0.0', () => {
     console.log('==============================================================');
     console.log(` 🎬 JKT48 Replay & DVR Studio (JKT48Connect Edition) aktif!`);
@@ -1236,4 +1287,7 @@ if (!IS_VERCEL) {
   });
 }
 
+handleRequest.formatRecentItem = formatRecentItem;
+handleRequest.isValidRecId = isValidRecId;
+handleRequest.isAllowedStreamUrl = isAllowedStreamUrl;
 module.exports = handleRequest;
