@@ -826,11 +826,16 @@ els.chatMessagesList.addEventListener('click', e => {
     const targetSessionSec = Number(seekBadge.dataset.seekSec);
     if (!els.hlsPlayer.classList.contains('hidden') && !Number.isNaN(targetSessionSec)) {
       const localSec = Math.max(0, targetSessionSec - state.currentPartBaseOffsetSec);
+      const vidDur = els.hlsPlayer.duration || Infinity;
+      const safeSec = Math.min(localSec, isFinite(vidDur) && vidDur > 0 ? Math.max(0, vidDur - 1) : localSec);
       userScrolledChat = false;
       els.chatResumeSyncBtn.classList.add('hidden');
-      els.hlsPlayer.currentTime = localSec;
+      els.hlsPlayer.currentTime = safeSec;
       els.hlsPlayer.play().catch(() => {});
       syncChatToVideoTime(true);
+      if (localSec > vidDur && isFinite(vidDur)) {
+        showToast(`Chat ini [${formatSeconds(targetSessionSec)}] berada di luar durasi rekaman video R2 yang tersimpan.`);
+      }
     }
   }
 });
@@ -874,13 +879,29 @@ function syncChatToVideoTime(force = false) {
     return;
   }
   const now = performance.now();
-  if (!force && now - state.lastTimeUpdateMs < 350) return;
+  if (!force && now - state.lastTimeUpdateMs < 250) return;
   state.lastTimeUpdateMs = now;
 
-  const sessionSec = els.hlsPlayer.currentTime + state.currentPartBaseOffsetSec;
-  const lastIdx = findLastCommentAt(sessionSec);
-  if (lastIdx < 0) return;
+  const vidDuration = els.hlsPlayer.duration || 0;
+  const vidCurrentTime = els.hlsPlayer.currentTime || 0;
+  const sessionSec = vidCurrentTime + state.currentPartBaseOffsetSec;
 
+  const firstOff = state.chatComments[0]?.offsetSeconds ?? 0;
+  let lastIdx = -1;
+
+  // Cek apakah timestamp komentar berada dalam jangkauan durasi video
+  if (firstOff <= (vidDuration > 0 ? vidDuration + 45 : 600)) {
+    // Sinkronisasi eksak berbasis detik video
+    lastIdx = findLastCommentAt(sessionSec);
+  } else if (vidDuration > 0) {
+    // Sinkronisasi adaptif jika komentar berasal dari ekor live sementara video di cloud terpotong
+    const progress = Math.min(1, Math.max(0, vidCurrentTime / vidDuration));
+    lastIdx = Math.min(state.chatComments.length - 1, Math.floor(progress * state.chatComments.length));
+  } else {
+    lastIdx = findLastCommentAt(sessionSec);
+  }
+
+  if (lastIdx < 0) return;
   if (lastIdx === lastHighlightedIdx && !force) return;
 
   if (lastHighlightedIdx >= 0) {
@@ -1220,9 +1241,11 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
       enableWorker: true,
       lowLatencyMode: false,
       startFragPrefetch: true,
-      maxBufferLength: 25,
-      maxMaxBufferLength: 60,
-      backBufferLength: 30
+      maxBufferLength: 12,
+      maxMaxBufferLength: 24,
+      backBufferLength: 8,
+      nudgeMaxRetry: 6,
+      fragLoadingMaxRetry: 5
     });
     state.hlsInstance = hls;
     hls.loadSource(url);
@@ -1342,9 +1365,10 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
     // ── Switch Player Engine Ala jkt48.preset.id ──
     const updateSwitchEngineLabel = () => {
       let lbl = 'Switch Player';
-      if (state.playerEngine === 'cinema') lbl = 'Player: HLS.js (Sync)';
+      if (state.playerEngine === 'cinema') lbl = 'Player: MP4 Direct';
       else if (state.playerEngine === 'official') lbl = 'Player: Web Resmi';
       else if (state.playerEngine === 'youtube') lbl = 'Player: YouTube Full';
+      else if (state.playerEngine === 'hls') lbl = 'Player: HLS.js';
       if (els.playerPrefLabel) els.playerPrefLabel.textContent = lbl;
       if (els.switchPlayerEngineBtn) els.switchPlayerEngineBtn.textContent = '🔄 ' + lbl;
     };
@@ -1355,12 +1379,14 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         state.playerEngine = 'official';
       } else if (state.playerEngine === 'official') {
         if (d.youtubeId) state.playerEngine = 'youtube';
-        else state.playerEngine = 'cinema';
+        else state.playerEngine = 'hls';
+      } else if (state.playerEngine === 'youtube') {
+        state.playerEngine = 'hls';
       } else {
         state.playerEngine = 'cinema';
       }
       updateSwitchEngineLabel();
-      showToast(`Beralih ke ${els.playerPrefLabel ? els.playerPrefLabel.textContent : state.playerEngine}`);
+      showToast(`Beralih ke: ${els.playerPrefLabel ? els.playerPrefLabel.textContent : state.playerEngine}`);
       playPart(state.currentPartIdx);
     };
 
@@ -1515,6 +1541,11 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       els.ytPlayer.classList.add('hidden');
       els.ytPlayer.src = 'about:blank';
       els.hlsPlayer.classList.remove('hidden');
+
+      if (state.playerEngine === 'hls' && partM3u8) {
+        attachHlsOrMp4ToVideo(partM3u8, { onFatalError: fallbackToOfficial });
+        return;
+      }
 
       els.hlsPlayer.onended = () => {
         if (state.currentPartIdx + 1 < recs.length) {
