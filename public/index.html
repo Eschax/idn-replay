@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JKT48 Replay & DVR Studio — Tanpa Jeda 72 Jam</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js"></script>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand" id="brandHome">
+        <div class="brand-badge">48</div>
+        <div>
+          <div class="brand-title">JKT48 Replay <span class="accent-tag">HYBRID</span></div>
+          <div class="brand-sub">IDN Live &amp; Showroom • Tanpa Tunggu 72 Jam</div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs">
+        <button class="nav-tab active" data-tab="replays">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+          <span>Replay Instan</span>
+        </button>
+        <button class="nav-tab" data-tab="live">
+          <span class="live-dot-pulse"></span>
+          <span>Sedang Live</span>
+          <span class="badge-count" id="liveCountBadge">0</span>
+        </button>
+        <button class="nav-tab" data-tab="recordings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>
+          <span>DVR &amp; Auto-Record</span>
+          <span class="badge-count secondary" id="recCountBadge">0</span>
+        </button>
+      </nav>
+
+      <div class="search-actions">
+        <form id="searchForm" class="search-box">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" id="searchInput" placeholder="Cari member, tanggal, collab..." autocomplete="off" />
+          <button type="button" id="clearSearchBtn" class="clear-btn hidden" title="Hapus pencarian">&times;</button>
+        </form>
+        <button id="refreshBtn" class="icon-btn" title="Muat Ulang Data Terbaru">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Built-in Cinema Player Dock -->
+    <section id="playerSection" class="player-section hidden">
+      <div class="player-card">
+        <div class="player-header">
+          <div class="player-meta">
+            <span id="playerPlatformBadge" class="platform-pill idn">IDN LIVE</span>
+            <h2 id="playerTitle">Memuat tayangan...</h2>
+          </div>
+          <div class="player-controls-top">
+            <select id="playerQualitySelect" class="quality-select hidden"></select>
+            <button id="playerRecordBtn" class="btn-action record hidden">
+              <span class="rec-dot"></span> Rekam ke PC
+            </button>
+            <a id="playerExternalLink" href="#" target="_blank" rel="noopener" class="btn-action subtle">
+              Buka Sumber ↗
+            </a>
+            <button id="closePlayerBtn" class="btn-close-player" title="Tutup Player">&times;</button>
+          </div>
+        </div>
+
+        <div class="video-wrapper" id="videoWrapper">
+          <!-- YouTube Embed Iframe or HLS HTML5 Video -->
+          <iframe
+            id="ytPlayer"
+            class="video-frame hidden"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowfullscreen
+          ></iframe>
+          <video id="hlsPlayer" class="video-frame hidden" controls playsinline></video>
+        </div>
+
+        <div class="player-footer" id="playerFooterInfo"></div>
+      </div>
+    </section>
+
+    <!-- Live Alert Banner (appears on Replay tab when someone is currently live!) -->
+    <section id="liveMiniBanner" class="live-mini-banner hidden"></section>
+
+    <!-- ==================== TAB 1: REPLAY INSTAN ==================== -->
+    <section id="tab-replays" class="tab-panel active">
+      <!-- Member Quick Filter Bar -->
+      <div class="member-bar-wrap">
+        <div class="member-bar-header">
+          <span class="section-label">Filter Member JKT48 <small>(Klik ⭐ pada member di tab DVR untuk Auto-Record)</small></span>
+          <button id="resetMemberBtn" class="text-btn hidden">Reset Filter Member</button>
+        </div>
+        <div class="member-chips" id="memberChipsContainer">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Platform & Duration Toolbar -->
+      <div class="filter-toolbar">
+        <div class="platform-Segment">
+          <button class="seg-btn active" data-platform="ALL">Semua Platform</button>
+          <button class="seg-btn" data-platform="IDN">
+            <span class="dot idn"></span> IDN Live
+          </button>
+          <button class="seg-btn" data-platform="SHOWROOM">
+            <span class="dot sr"></span> SHOWROOM
+          </button>
+        </div>
+
+        <div class="toolbar-right">
+          <label class="toggle-switch">
+            <input type="checkbox" id="fullOnlyToggle" checked />
+            <span>Hanya Full Replay (&ge; 5 Menit)</span>
+          </label>
+          <span class="result-counter" id="replayResultCounter">Memuat...</span>
+        </div>
+      </div>
+
+      <!-- Replay Grid -->
+      <div id="replaysGrid" class="video-grid"></div>
+    </section>
+
+    <!-- ==================== TAB 2: SEDANG LIVE ==================== -->
+    <section id="tab-live" class="tab-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Monitor Member Sedang Live (Real-Time)</h2>
+          <p>Tonton langsung stream IDN Live &amp; Showroom tanpa aplikasi, atau rekam langsung ke PC Anda.</p>
+        </div>
+        <button id="refreshLiveBtn" class="btn-action">Periksa Status Live</button>
+      </div>
+
+      <div id="liveGrid" class="video-grid"></div>
+    </section>
+
+    <!-- ==================== TAB 3: DVR & AUTO-RECORD ==================== -->
+    <section id="tab-recordings" class="tab-panel">
+      <div class="dvr-layout">
+        <!-- Left: Local Recordings List -->
+        <div class="dvr-main">
+          <div class="panel-heading">
+            <div>
+              <h2>Rekaman Lokal Saya (0 Detik Jeda)</h2>
+              <p>Semua rekaman disimpan di folder <code>recordings/</code> di PC Anda dan bisa langsung ditonton bahkan saat masih proses merekam.</p>
+            </div>
+          </div>
+          <div id="recordingsList" class="recordings-list"></div>
+        </div>
+
+        <!-- Right: Auto-Record Oshi Configuration -->
+        <aside class="dvr-sidebar">
+          <div class="oshi-card">
+            <div class="oshi-card-header">
+              <div>
+                <h3>Auto-Record Oshi</h3>
+                <p>Otomatis merekam di latar belakang begitu member pilihan Anda mulai live di IDN / Showroom.</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="autoRecordToggle" checked />
+                <span>Aktif</span>
+              </label>
+            </div>
+
+            <div class="oshi-search-wrap">
+              <input type="text" id="oshiFilterInput" placeholder="Cari nama member untuk dipilih..." />
+            </div>
+
+            <div class="oshi-selected-tags" id="oshiSelectedTags"></div>
+
+            <div class="oshi-member-checklist" id="oshiMemberChecklist"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+
