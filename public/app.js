@@ -1,8 +1,14 @@
 // ============================================================================
-// JKT48 Replay & DVR Studio (100% Powered by JKT48Connect API + Local DVR)
+// JKT48 Replay & DVR Studio — Fast HLS Byte-Range + 60fps Sync Chat + Private Auth
 // ============================================================================
 
+const CHAT_WINDOW_SIZE = 180;
+
 const state = {
+  authenticated: false,
+  currentUser: null,
+  pollIntervalId: null,
+
   activeTab: 'replays',
   platform: 'ALL',
   selectedMember: '',
@@ -16,25 +22,59 @@ const state = {
     autoRecordEnabled: true,
     autoRecordMode: 'oshi',
     oshiList: [],
-    hasApiKey: true,
-    maskedApiKey: ''
+    hasApiKey: false,
+    maskedApiKey: '',
+    telegramEnabled: true,
+    telegramMode: 'all',
+    telegramChatId: '',
+    hasTelegramToken: false,
+    maskedTelegramToken: '',
+    publicAppUrl: '',
+    isServerless: false
   },
   oshiSearchFilter: '',
+
+  // Player state
   hlsInstance: null,
   currentPlayingLive: null,
   currentPlayingReplay: null,
   currentPartIdx: 0,
+  currentPartBaseOffsetSec: 0,
   playerEngine: 'cinema',
   mediaSourceAbort: null,
   mediaSourceObjectUrl: null,
+
+  // High-performance Sync Chat state
   chatVisible: true,
   activeSideTab: 'comments',
   chatComments: [],
+  chatHasOffsets: false,
+  chatSourceLabel: 'JKT48Connect',
+  chatWindowStart: 0,
+  chatWindowEnd: 0,
+  chatDomMap: new Map(),
+  activeChatIndices: [],
+  lastSyncedIdx: -2,
+  lastTimeUpdateMs: 0,
+  userScrollPausedUntil: 0,
   chatMode: 'session',
   chatPollTimer: null
 };
 
 const els = {
+  // Auth Gate
+  loginOverlay: document.getElementById('loginOverlay'),
+  loginForm: document.getElementById('loginForm'),
+  loginUsername: document.getElementById('loginUsername'),
+  loginPassword: document.getElementById('loginPassword'),
+  togglePwBtn: document.getElementById('togglePwBtn'),
+  loginErrorMsg: document.getElementById('loginErrorMsg'),
+  loginSubmitBtn: document.getElementById('loginSubmitBtn'),
+  appShell: document.getElementById('appShell'),
+  authUserBadge: document.getElementById('authUserBadge'),
+  logoutBtn: document.getElementById('logoutBtn'),
+
+  // Topbar & Navigation
   navTabs: document.querySelectorAll('.nav-tab'),
   tabPanels: document.querySelectorAll('.tab-panel'),
   brandHome: document.getElementById('brandHome'),
@@ -57,6 +97,7 @@ const els = {
   playerRecordBtn: document.getElementById('playerRecordBtn'),
   playerDownloadMp4Btn: document.getElementById('playerDownloadMp4Btn'),
   closePlayerBtn: document.getElementById('closePlayerBtn'),
+  videoLoadingBadge: document.getElementById('videoLoadingBadge'),
   ytPlayer: document.getElementById('ytPlayer'),
   hlsPlayer: document.getElementById('hlsPlayer'),
   playerFooterInfo: document.getElementById('playerFooterInfo'),
@@ -72,6 +113,7 @@ const els = {
   sidePanelGifts: document.getElementById('sidePanel-gifts'),
   sidePanelScreenshots: document.getElementById('sidePanel-screenshots'),
   chatPanelSub: document.getElementById('chatPanelSub'),
+  chatResumeSyncBtn: document.getElementById('chatResumeSyncBtn'),
   refreshCommentsBtn: document.getElementById('refreshCommentsBtn'),
   chatMessagesList: document.getElementById('chatMessagesList'),
   sideGiftsContent: document.getElementById('sideGiftsContent'),
@@ -92,7 +134,16 @@ const els = {
   refreshLiveBtn: document.getElementById('refreshLiveBtn'),
   liveGrid: document.getElementById('liveGrid'),
 
-  // Recordings & Settings Tab
+  // Telegram, Recordings & Settings Tab
+  telegramToggle: document.getElementById('telegramToggle'),
+  tgBotTokenInput: document.getElementById('tgBotTokenInput'),
+  tgChatIdInput: document.getElementById('tgChatIdInput'),
+  tgDetectChatBtn: document.getElementById('tgDetectChatBtn'),
+  tgModeSelect: document.getElementById('tgModeSelect'),
+  saveTgBtn: document.getElementById('saveTgBtn'),
+  testTgBtn: document.getElementById('testTgBtn'),
+  webhookTgBtn: document.getElementById('webhookTgBtn'),
+
   recordingsList: document.getElementById('recordingsList'),
   jkcApiKeyInput: document.getElementById('jkcApiKeyInput'),
   saveJkcKeyBtn: document.getElementById('saveJkcKeyBtn'),
@@ -150,184 +201,145 @@ function formatRelativeIndo(isoStr) {
   return `${Math.floor(diffSec / 86400)} hari lalu`;
 }
 
-// ============================================================================
-// 0. DIRECT BROWSER JKT48CONNECT CLIENT & MP4 DOWNLOAD HELPER
-// ============================================================================
-const JKC_CLIENT_KEY = 'jkc_82a84efebf4b67b73fa0c20b7096ea8de1e336c8';
-
-function normalizeMediaUrlClient(url) {
-  if (!url) return '';
-  return String(url).replace('https://api.jkt48connect.app:8443/', 'https://api.jkt48connect.app/');
-}
-
 function isLocalhostEnv() {
   const h = window.location.hostname;
   return h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.') || h.startsWith('10.');
 }
 
-function buildDownloadMp4Href(mp4Url, titleStr, partNum = 1) {
-  const cleanUrl = normalizeMediaUrlClient(mp4Url);
-  if (!cleanUrl) return '#';
-  const safeName = `${String(titleStr || 'JKT48_Replay').replace(/[^a-zA-Z0-9_-]/g, '_')}_Part${partNum}`;
-  if (isLocalhostEnv()) {
-    return `/api/download-mp4?url=${encodeURIComponent(cleanUrl)}&name=${encodeURIComponent(safeName)}`;
+// ============================================================================
+// 0. AUTHENTICATED FETCH WRAPPER & LOGIN GATE
+// ============================================================================
+function showLoginGate(message = '') {
+  state.authenticated = false;
+  state.currentUser = null;
+  if (state.pollIntervalId) {
+    clearInterval(state.pollIntervalId);
+    state.pollIntervalId = null;
   }
-  return cleanUrl;
-}
-
-async function fetchJkcDirect(endpointPath, params = {}) {
-  const u = new URL(endpointPath, 'https://api.jkt48connect.app');
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') u.searchParams.set(k, String(v));
+  destroyHls();
+  els.playerSection.classList.add('hidden');
+  els.appShell.classList.add('hidden');
+  els.loginOverlay.classList.remove('hidden');
+  if (message) {
+    els.loginErrorMsg.textContent = message;
+    els.loginErrorMsg.classList.remove('hidden');
+  } else {
+    els.loginErrorMsg.classList.add('hidden');
   }
-  u.searchParams.set('api_key', JKC_CLIENT_KEY);
-  const res = await fetch(u.toString());
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
-function formatRecentItemClient(item) {
-  const isIdn = (item.type || '').toLowerCase() === 'idn' || Boolean(item.idn);
-  const memberName = item.member?.name || item.room_info?.name || 'Member JKT48';
-  const nickname =
-    item.member?.nickname || item.room_info?.nickname || memberName.split(' ')[0];
-  const avatar = normalizeMediaUrlClient(
-    item.member?.img_alt || item.member?.img || item.room_info?.img_alt || ''
-  );
-  const thumb = normalizeMediaUrlClient(
-    item.idn?.image || item.member?.img_alt || item.member?.img || ''
-  );
-  const liveTitle = item.idn?.title || `Live ${nickname} JKT48`;
-  const startDate = item.live_info?.date?.start || item.created_at || '';
-  const endDate = item.live_info?.date?.end || item.created_at || '';
-  const durMs = item.live_info?.duration || 0;
-  const durationSeconds = durMs > 10000 ? Math.round(durMs / 1000) : durMs;
-  const viewers = item.live_info?.viewers?.num || item.viewers || 0;
-  const points = item.points || item.total_gifts || 0;
-  const pointUnit = item.point_unit || (isIdn ? 'idn_gold' : 'showroom_points');
-  const streamUrl = normalizeMediaUrlClient(
-    item.playback?.stream_url || item.recording?.stream_url || ''
-  );
-  const ytVideos = item.youtube_replay?.videos || [];
-  const playbackStatus = item.playback?.status || (streamUrl ? 'ready' : 'pending');
-  const parts = item.playback?.parts ?? (streamUrl ? 1 : 0);
-
-  return {
-    dataId: item.data_id || item._id,
-    roomId: item.room_id,
-    platform: isIdn ? 'IDN' : 'SHOWROOM',
-    memberName,
-    nickname,
-    avatar,
-    thumb,
-    title: `${nickname} JKT48 — ${liveTitle}`,
-    liveTitle,
-    startedAt: startDate,
-    endedAt: endDate,
-    durationSeconds,
-    viewers,
-    points,
-    pointUnit,
-    playbackStatus,
-    parts,
-    streamUrl,
-    youtubeId: item.playback?.youtube_id || ytVideos[0]?.youtube_id || null,
-    youtubeUrl: item.playback?.youtube_url || ytVideos[0]?.url || null
-  };
-}
-
-function formatReplayDetailClient(d) {
-  const base = formatRecentItemClient({ ...d, member: d.member || d.room_info });
-  const recordings = (d.recordings || []).map((r, idx) => ({
-    part: idx + 1,
-    run: r.run,
-    mp4Url: normalizeMediaUrlClient(r.url),
-    streamUrl: normalizeMediaUrlClient(r.stream_url),
-    playerUrl: normalizeMediaUrlClient(r.player_url),
-    durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : 0,
-    sizeBytes: r.bytes || 0,
-    startedAt: r.started_at,
-    partial: r.partial
-  }));
-  const combinedStreamUrl = normalizeMediaUrlClient(
-    d.playback?.stream_url ||
-      d.recording_session?.stream_url ||
-      d.recording?.stream_url ||
-      recordings[0]?.streamUrl ||
-      ''
-  );
-  let giftItems = [];
-  if (Array.isArray(d.live_info?.gift?.list) && d.live_info.gift.list.length > 0) {
-    giftItems = d.live_info.gift.list.map(g => ({
-      id: g.id || g.name,
-      name: g.name || 'Gift',
-      img: normalizeMediaUrlClient(g.img || ''),
-      num: g.num || 1,
-      point: g.point || 0
-    }));
-  } else if (Array.isArray(d.live_info?.gift?.log)) {
-    const giftMap = new Map();
-    for (const entry of d.live_info.gift.log) {
-      for (const g of entry.gifts || []) {
-        const key = g.id || g.name;
-        if (!giftMap.has(key)) {
-          giftMap.set(key, {
-            id: key,
-            name: g.name || 'Gift',
-            img: normalizeMediaUrlClient(g.img || ''),
-            num: 0,
-            point: g.point || 0
-          });
-        }
-        giftMap.get(key).num += g.num || 1;
-      }
-    }
-    giftItems = [...giftMap.values()].sort((a, b) => b.point * b.num - a.point * a.num);
+async function apiFetch(url, options = {}) {
+  const res = await fetch(url, {
+    credentials: 'same-origin',
+    ...options
+  });
+  if (res.status === 401 && !url.startsWith('/api/auth/')) {
+    showLoginGate('Sesi berakhir. Silakan login kembali.');
+    throw new Error('Silakan login terlebih dahulu');
   }
-  const fans = (d.fans || d.users || []).slice(0, 30).map((f, idx) => ({
-    rank: f.rank || idx + 1,
-    id: f.id,
-    name: f.name || 'Fan',
-    avatar: normalizeMediaUrlClient(
-      f.avatar_url ||
-        (f.avatar_id
-          ? `https://image.showroom-cdn.com/showroom-prod/image/avatar/${f.avatar_id}.png`
-          : '')
-    ),
-    score: f.gold ?? f.reported_gold ?? f.point ?? f.points ?? 0
-  }));
-  const ss = d.live_info?.screenshot;
-  const screenshots = ss?.base_url
-    ? (ss.list || []).map(t => normalizeMediaUrlClient(`${ss.base_url}/${t}.${ss.format || 'jpg'}`))
-    : [];
-
-  return {
-    ...base,
-    combinedStreamUrl,
-    recordings,
-    youtubeVideos: d.youtube_replay?.videos || [],
-    fans,
-    goldSummary: d.gold_summary || null,
-    giftItems,
-    screenshots,
-    leaderboards: {
-      jkt48connectBanner: normalizeMediaUrlClient(d.leaderboard_designs?.jkt48connect?.banner?.url),
-      jkt48connectPortrait: normalizeMediaUrlClient(d.leaderboard_designs?.jkt48connect?.portrait?.url),
-      photobookBanner: normalizeMediaUrlClient(d.leaderboard_designs?.photobook?.banner?.url),
-      avoneraBanner: normalizeMediaUrlClient(d.leaderboard_designs?.avonera48?.portrait?.url)
-    }
-  };
+  return res;
 }
 
-async function getReplayDetailWithFallback(dataId) {
+els.togglePwBtn.addEventListener('click', () => {
+  const isPw = els.loginPassword.type === 'password';
+  els.loginPassword.type = isPw ? 'text' : 'password';
+});
+
+els.loginForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  els.loginErrorMsg.classList.add('hidden');
+  els.loginSubmitBtn.disabled = true;
+  els.loginSubmitBtn.textContent = 'Memverifikasi...';
+
   try {
-    const res = await fetch(`/api/replays/${encodeURIComponent(dataId)}`);
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        username: els.loginUsername.value.trim(),
+        password: els.loginPassword.value
+      })
+    });
     const json = await res.json();
-    if (json.ok && json.data) return json.data;
+    if (!res.ok || !json.ok) {
+      els.loginErrorMsg.textContent = json.error || 'Gagal login.';
+      els.loginErrorMsg.classList.remove('hidden');
+      return;
+    }
+    els.loginPassword.value = '';
+    onAuthenticated(json.user.username);
+  } catch (err) {
+    els.loginErrorMsg.textContent = `Gagal terhubung ke server: ${err.message}`;
+    els.loginErrorMsg.classList.remove('hidden');
+  } finally {
+    els.loginSubmitBtn.disabled = false;
+    els.loginSubmitBtn.textContent = 'Masuk ke Studio →';
+  }
+});
+
+els.logoutBtn.addEventListener('click', async () => {
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
   } catch {}
-  const raw = await fetchJkcDirect(`/api/recent/${encodeURIComponent(dataId)}`);
-  return formatReplayDetailClient(raw);
+  showLoginGate();
+  showToast('Anda telah keluar.');
+});
+
+async function onAuthenticated(username) {
+  state.authenticated = true;
+  state.currentUser = username;
+  els.authUserBadge.textContent = `👤 ${username}`;
+  els.loginOverlay.classList.add('hidden');
+  els.appShell.classList.remove('hidden');
+
+  if (window.location.protocol === 'https:') {
+    els.webhookTgBtn.classList.remove('hidden');
+  }
+
+  await Promise.all([
+    loadOshiConfig(),
+    loadMembers(),
+    loadNowLive(),
+    loadReplays(),
+    loadRecordings()
+  ]);
+
+  if (state.pollIntervalId) clearInterval(state.pollIntervalId);
+  state.pollIntervalId = setInterval(() => {
+    if (!state.authenticated) return;
+    loadNowLive();
+    if (state.activeTab === 'recordings' || state.recordings.some(r => r.status === 'recording')) {
+      loadRecordings();
+    }
+  }, 30000);
 }
+
+// ============================================================================
+// 1. DOWNLOAD MODAL & REPLAY DETAIL HELPER
+// ============================================================================
+async function getReplayDetail(dataId) {
+  const res = await apiFetch(`/api/replays/${encodeURIComponent(dataId)}`);
+  const json = await res.json();
+  if (!json.ok || !json.data) {
+    throw new Error(json.error || 'Gagal memuat detail replay');
+  }
+  return json.data;
+}
+
+function closeDownloadModal() {
+  els.downloadModal.classList.add('hidden');
+}
+
+els.closeDlModalBtn.addEventListener('click', closeDownloadModal);
+els.downloadModal.addEventListener('click', e => {
+  if (e.target === els.downloadModal) closeDownloadModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !els.downloadModal.classList.contains('hidden')) {
+    closeDownloadModal();
+  }
+});
 
 async function openDownloadModal(item) {
   els.downloadModal.classList.remove('hidden');
@@ -336,7 +348,7 @@ async function openDownloadModal(item) {
   els.dlModalBody.innerHTML = `<div style="color:var(--text-muted);font-size:13px;padding:16px;text-align:center">Menyiapkan file rekaman...</div>`;
 
   try {
-    const d = await getReplayDetailWithFallback(item.dataId);
+    const d = item.recordings ? item : await getReplayDetail(item.dataId);
     const recs = (d.recordings || []).filter(r => r.mp4Url);
     if (recs.length === 0) {
       els.dlModalBody.innerHTML = `
@@ -347,23 +359,27 @@ async function openDownloadModal(item) {
       return;
     }
 
-    const isLocal = isLocalhostEnv();
+    const isLocal = isLocalhostEnv() && !state.oshiConfig.isServerless;
     els.dlModalBody.innerHTML = `
       <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5">
-        ${isLocal 
-          ? 'Karena Anda membuka dari <strong>localhost</strong>, klik tombol di bawah untuk langsung mengunduh file video ke PC Anda.' 
-          : 'File rekaman disimpan langsung di Cloudflare R2 JKT48Connect. Klik tombol di bawah untuk mengunduh:'}
+        ${
+          isLocal
+            ? 'Klik tombol di bawah untuk langsung mengunduh file MP4 ke folder Downloads perangkat Anda:'
+            : 'Pilih opsi unduhan dari server R2 JKT48Connect:'
+        }
       </div>
 
       <div style="display:flex;flex-direction:column;gap:10px">
-        ${recs.map((r, i) => {
-          const directUrl = r.mp4Url + (r.mp4Url.includes('?') ? '&' : '?') + 'v=2';
-          const localUrl = `/api/download-mp4?url=${encodeURIComponent(r.mp4Url)}&name=${encodeURIComponent(`${(d.nickname || 'JKT48').replace(/[^a-zA-Z0-9_-]/g, '_')}_Part${r.part}`)}`;
-          const playerUrl = r.playerUrl || (r.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${r.run}` : '');
-          const sizeStr = r.sizeBytes ? formatBytes(r.sizeBytes) : '';
-          const durStr = r.durationSeconds ? formatSeconds(r.durationSeconds) : '';
+        ${recs
+          .map(r => {
+            const directUrl = r.mp4Url + (r.mp4Url.includes('?') ? '&' : '?') + 'v=2';
+            const localUrl = `/api/download-mp4?url=${encodeURIComponent(r.mp4Url)}&name=${encodeURIComponent(`${(d.nickname || 'JKT48').replace(/[^a-zA-Z0-9_-]/g, '_')}_Part${r.part}`)}`;
+            const playerUrl =
+              r.playerUrl || (r.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${r.run}` : '');
+            const sizeStr = r.sizeBytes ? formatBytes(r.sizeBytes) : '';
+            const durStr = r.durationSeconds ? formatSeconds(r.durationSeconds) : '';
 
-          return `
+            return `
             <div class="dl-part-card">
               <div class="dl-part-header">
                 <div>
@@ -372,29 +388,42 @@ async function openDownloadModal(item) {
                 </div>
               </div>
               <div class="dl-btn-row">
-                ${isLocal ? `
+                ${
+                  isLocal
+                    ? `
                   <a class="btn-action" href="${escapeHtml(localUrl)}" style="flex:1;text-align:center;text-decoration:none">
                     ⬇ Download Langsung (.mp4)
                   </a>
-                ` : `
-                  <a class="btn-action" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">
-                    ⬇ Buka / Download MP4
-                  </a>
-                  ${playerUrl ? `
-                    <a class="btn-action subtle" href="${escapeHtml(playerUrl)}" target="_blank" rel="noopener" style="text-decoration:none">
-                      ↗ Halaman Unduh Resmi
+                `
+                    : `
+                  ${
+                    playerUrl
+                      ? `
+                    <a class="btn-action" href="${escapeHtml(playerUrl)}" target="_blank" rel="noopener" style="flex:1;text-align:center;text-decoration:none">
+                      ⬇ Halaman Unduh Resmi (Rekomendasi)
                     </a>
-                  ` : ''}
-                `}
+                  `
+                      : ''
+                  }
+                  <a class="btn-action subtle" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener" style="text-decoration:none">
+                    ↗ File MP4 Langsung
+                  </a>
+                `
+                }
               </div>
-              ${!isLocal ? `
+              ${
+                !isLocal
+                  ? `
                 <div style="font-size:11px;color:var(--text-muted)">
-                  💡 <em>Tips di HP / Browser: Jika video memutar bukannya mengunduh, tahan tombol di atas lalu pilih <strong>"Download link"</strong> (atau di player video klik ⋮ &rarr; Download).</em>
+                  💡 <em>Di Halaman Unduh Resmi, klik tombol <strong>"Unduh MP4"</strong> agar langsung tersimpan ke perangkat.</em>
                 </div>
-              ` : ''}
+              `
+                  : ''
+              }
             </div>
           `;
-        }).join('')}
+          })
+          .join('')}
       </div>
     `;
   } catch (err) {
@@ -402,12 +431,8 @@ async function openDownloadModal(item) {
   }
 }
 
-async function triggerDirectDownloadForReplay(item) {
-  openDownloadModal(item);
-}
-
 // ============================================================================
-// 1. TAB & SIDE-PANEL NAVIGATION
+// 2. TAB & SIDE-PANEL NAVIGATION
 // ============================================================================
 function switchTab(tabName) {
   state.activeTab = tabName;
@@ -452,7 +477,7 @@ els.brandHome.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 2. SYNCHRONIZED COMMENTS & LIVE CHAT PANEL
+// 3. 60-FPS WINDOWED SYNC CHAT + LIVE CHAT PANEL
 // ============================================================================
 function stopChatPolling() {
   if (state.chatPollTimer) {
@@ -466,56 +491,105 @@ els.toggleChatPanelBtn.addEventListener('click', () => {
   els.playerSplitLayout.classList.toggle('chat-hidden', !state.chatVisible);
 });
 
+// Pause auto-scroll for 8s when user manually scrolls chat
+['wheel', 'touchmove', 'pointerdown'].forEach(evName => {
+  els.chatMessagesList.addEventListener(
+    evName,
+    e => {
+      if (evName === 'pointerdown' && e.target.closest('[data-seek-sec]')) return;
+      if (state.chatHasOffsets && !state.chatPollTimer) {
+        state.userScrollPausedUntil = Date.now() + 8000;
+        els.chatResumeSyncBtn.classList.remove('hidden');
+      }
+    },
+    { passive: true }
+  );
+});
+
+els.chatResumeSyncBtn.addEventListener('click', () => {
+  state.userScrollPausedUntil = 0;
+  els.chatResumeSyncBtn.classList.add('hidden');
+  syncChatToVideoTime(true);
+});
+
+// Single delegated click listener for timestamp seeking & window shifting
+els.chatMessagesList.addEventListener('click', e => {
+  const seekBadge = e.target.closest('[data-seek-sec]');
+  if (seekBadge) {
+    const targetSessionSec = Number(seekBadge.dataset.seekSec);
+    if (!els.hlsPlayer.classList.contains('hidden') && !Number.isNaN(targetSessionSec)) {
+      const localSec = Math.max(0, targetSessionSec - state.currentPartBaseOffsetSec);
+      state.userScrollPausedUntil = 0;
+      els.chatResumeSyncBtn.classList.add('hidden');
+      els.hlsPlayer.currentTime = localSec;
+      els.hlsPlayer.play().catch(() => {});
+    }
+    return;
+  }
+  const shiftBtn = e.target.closest('[data-chat-shift]');
+  if (shiftBtn) {
+    const dir = Number(shiftBtn.dataset.chatShift);
+    const nextCenter = Math.max(
+      0,
+      Math.min(
+        state.chatComments.length - 1,
+        Math.floor((state.chatWindowStart + state.chatWindowEnd) / 2) + dir * 120
+      )
+    );
+    state.userScrollPausedUntil = Date.now() + 12000;
+    els.chatResumeSyncBtn.classList.remove('hidden');
+    renderChatWindow(nextCenter);
+  }
+});
+
 async function loadCommentsForPlayer(opts) {
   stopChatPolling();
   state.chatComments = [];
+  state.chatDomMap.clear();
+  state.activeChatIndices = [];
+  state.lastSyncedIdx = -2;
+  state.userScrollPausedUntil = 0;
+  els.chatResumeSyncBtn.classList.add('hidden');
   state.chatMode = opts.mode || 'session';
   els.chatMessagesList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px">Memuat komentar...</div>`;
 
   const fetchOnce = async () => {
     try {
-      let comments = [];
-      let sourceLabel = 'JKT48Connect';
-      try {
-        const params = new URLSearchParams(opts);
-        const res = await fetch(`/api/comments?${params.toString()}`);
-        const json = await res.json();
-        if (Array.isArray(json.comments) && json.comments.length > 0) {
-          comments = json.comments;
-          sourceLabel = json.source || 'JKT48Connect';
-        }
-      } catch {}
+      const params = new URLSearchParams(opts);
+      const res = await apiFetch(`/api/comments?${params.toString()}`);
+      const json = await res.json();
+      const rawComments = Array.isArray(json.comments) ? json.comments : [];
+      state.chatSourceLabel = json.source || 'JKT48Connect';
 
-      if (comments.length === 0 && opts.mode !== 'local') {
-        const endpoint =
-          opts.platform === 'IDN' && opts.dataId
-            ? `/api/idn-comments/${encodeURIComponent(opts.dataId)}`
-            : opts.roomId
-              ? `/api/showroom-comments/${encodeURIComponent(opts.roomId)}`
-              : '';
-        if (endpoint) {
-          const raw = await fetchJkcDirect(endpoint);
-          const rawList = Array.isArray(raw?.comments) ? raw.comments : [];
-          const startMs = opts.startedAt ? Date.parse(opts.startedAt) : 0;
-          const firstStr = rawList[0]?.source_time || rawList[0]?.observed_at || '';
-          const baseMs = startMs || (firstStr ? Date.parse(firstStr) : 0);
-          comments = rawList.map(c => {
-            const tStr = c.source_time || c.observed_at || '';
-            const tMs = tStr ? Date.parse(tStr) : 0;
-            return {
-              id: c.id || String(c.sequence || Math.random()),
-              user: c.user?.name || 'Fans',
-              avatar: c.user?.avatar_url || '',
-              text: c.comment || '',
-              time: tStr,
-              offsetSeconds: baseMs > 0 && tMs >= baseMs ? Math.round((tMs - baseMs) / 1000) : undefined
-            };
-          });
-        }
+      const withOffsets = rawComments.some(c => typeof c.offsetSeconds === 'number');
+      state.chatHasOffsets = withOffsets && !opts.isLive;
+      if (state.chatHasOffsets) {
+        rawComments.sort((a, b) => (a.offsetSeconds ?? 0) - (b.offsetSeconds ?? 0));
       }
 
-      state.chatComments = comments;
-      renderChatMessages({ source: sourceLabel });
+      state.chatComments = rawComments;
+      els.chatPanelSub.textContent = `${rawComments.length.toLocaleString('id-ID')} komentar (${state.chatSourceLabel})`;
+
+      if (rawComments.length === 0) {
+        els.chatMessagesList.innerHTML = `
+          <div style="color:var(--text-muted);font-size:12.5px;padding:14px;line-height:1.5">
+            Belum ada log komentar untuk sesi ini (buffer komentar JKT48Connect menyimpan sesi terbaru hingga 24 jam, sedangkan rekaman DVR lokal menyimpan komentar secara permanen).
+          </div>
+        `;
+        return;
+      }
+
+      if (opts.isLive) {
+        // Live mode: show latest 150 messages & scroll to bottom
+        const start = Math.max(0, rawComments.length - 150);
+        renderChatRange(start, rawComments.length);
+        els.chatMessagesList.scrollTop = els.chatMessagesList.scrollHeight;
+      } else {
+        const curSec = els.hlsPlayer.currentTime + state.currentPartBaseOffsetSec;
+        const idx = state.chatHasOffsets ? Math.max(0, findLastCommentAt(curSec)) : 0;
+        renderChatWindow(idx);
+        syncChatToVideoTime(true);
+      }
     } catch {
       els.chatMessagesList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px">Gagal memuat komentar.</div>`;
     }
@@ -530,75 +604,156 @@ async function loadCommentsForPlayer(opts) {
   els.refreshCommentsBtn.onclick = fetchOnce;
 }
 
-function renderChatMessages(meta = {}) {
-  els.chatPanelSub.textContent = `${state.chatComments.length} komentar (${meta.source || 'JKT48Connect'})`;
+function buildSingleChatHtml(c, idx) {
+  const hasOffset = typeof c.offsetSeconds === 'number' && c.offsetSeconds >= 0;
+  const timeBadge = hasOffset
+    ? `<span class="chat-time-tag" data-seek-sec="${c.offsetSeconds}">[${formatSeconds(c.offsetSeconds)}]</span>`
+    : c.time
+      ? `<span style="color:var(--text-muted);font-size:10px;margin-right:5px">${escapeHtml(new Date(c.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</span>`
+      : '';
+  const initial = escapeHtml((c.user || 'U').slice(0, 1).toUpperCase());
+  const avatarHtml = c.avatar
+    ? `<img class="chat-avatar" src="${escapeHtml(c.avatar)}" alt="" loading="lazy" decoding="async" />`
+    : `<div class="chat-avatar" style="display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">${initial}</div>`;
 
-  if (state.chatComments.length === 0) {
-    els.chatMessagesList.innerHTML = `
-      <div style="color:var(--text-muted);font-size:12.5px;padding:14px;line-height:1.5">
-        Belum ada log komentar untuk sesi ini (buffer komentar JKT48Connect menyimpan hingga 24 jam terakhir, sedangkan rekaman DVR lokal menyimpan komentar secara permanen).
-      </div>
-    `;
-    return;
+  return `<div class="chat-msg" data-chat-idx="${idx}">${avatarHtml}<div style="min-width:0;flex:1">${timeBadge}<span class="chat-user">${escapeHtml(c.user)}:</span><span class="chat-text">${escapeHtml(c.text)}</span></div></div>`;
+}
+
+function renderChatRange(start, end) {
+  state.chatWindowStart = start;
+  state.chatWindowEnd = end;
+  state.chatDomMap.clear();
+  state.activeChatIndices = [];
+
+  const parts = [];
+  if (start > 0) {
+    parts.push(
+      `<button type="button" class="btn-action subtle" data-chat-shift="-1" style="width:100%;font-size:11.5px;padding:5px">↑ Muat komentar sebelumnya (${start} di atas)</button>`
+    );
+  }
+  for (let i = start; i < end; i++) {
+    parts.push(buildSingleChatHtml(state.chatComments[i], i));
+  }
+  if (end < state.chatComments.length) {
+    parts.push(
+      `<button type="button" class="btn-action subtle" data-chat-shift="1" style="width:100%;font-size:11.5px;padding:5px">↓ Lihat komentar berikutnya (${state.chatComments.length - end} lagi)</button>`
+    );
   }
 
-  els.chatMessagesList.innerHTML = state.chatComments
-    .map((c, idx) => {
-      const hasOffset = typeof c.offsetSeconds === 'number' && c.offsetSeconds >= 0;
-      const timeBadge = hasOffset
-        ? `<span class="chat-time-tag" data-seek-sec="${c.offsetSeconds}">[${formatSeconds(c.offsetSeconds)}]</span>`
-        : c.time
-          ? `<span style="color:var(--text-muted);font-size:10px;margin-right:5px">${escapeHtml(new Date(c.time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</span>`
-          : '';
-      const avatarHtml = c.avatar
-        ? `<img class="chat-avatar" src="${escapeHtml(c.avatar)}" alt="" loading="lazy" />`
-        : `<div class="chat-avatar" style="display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800">${escapeHtml((c.user || 'U').slice(0, 1).toUpperCase())}</div>`;
-
-      return `
-        <div class="chat-msg" data-chat-idx="${idx}" data-offset="${hasOffset ? c.offsetSeconds : -1}">
-          ${avatarHtml}
-          <div style="min-width:0;flex:1">
-            ${timeBadge}
-            <span class="chat-user">${escapeHtml(c.user)}:</span>
-            <span class="chat-text">${escapeHtml(c.text)}</span>
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-
-  els.chatMessagesList.querySelectorAll('[data-seek-sec]').forEach(badge => {
-    badge.addEventListener('click', () => {
-      const sec = Number(badge.dataset.seekSec);
-      if (!els.hlsPlayer.classList.contains('hidden')) {
-        els.hlsPlayer.currentTime = sec;
-        els.hlsPlayer.play().catch(() => {});
-      }
-    });
+  els.chatMessagesList.innerHTML = parts.join('');
+  els.chatMessagesList.querySelectorAll('.chat-msg').forEach(node => {
+    state.chatDomMap.set(Number(node.dataset.chatIdx), node);
   });
 }
 
-els.hlsPlayer.addEventListener('timeupdate', () => {
-  if (!state.chatComments.length) return;
-  const cur = els.hlsPlayer.currentTime;
-  const nodes = els.chatMessagesList.querySelectorAll('.chat-msg');
-  let lastActiveNode = null;
-  nodes.forEach(node => {
-    const offset = Number(node.dataset.offset);
-    const isCurrent = offset >= 0 && offset <= cur && cur - offset <= 8;
-    node.classList.toggle('active-sync', isCurrent);
-    if (isCurrent) lastActiveNode = node;
-  });
-  if (lastActiveNode && state.activeSideTab === 'comments') {
-    lastActiveNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+function renderChatWindow(centerIdx) {
+  const total = state.chatComments.length;
+  if (total <= CHAT_WINDOW_SIZE) {
+    renderChatRange(0, total);
+    return;
   }
-});
+  const before = Math.floor(CHAT_WINDOW_SIZE * 0.65);
+  let start = Math.max(0, centerIdx - before);
+  let end = Math.min(total, start + CHAT_WINDOW_SIZE);
+  if (end - start < CHAT_WINDOW_SIZE) {
+    start = Math.max(0, end - CHAT_WINDOW_SIZE);
+  }
+  renderChatRange(start, end);
+}
+
+// O(log N) binary search for latest comment with offsetSeconds <= sec
+function findLastCommentAt(sec) {
+  const arr = state.chatComments;
+  let lo = 0;
+  let hi = arr.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const off = arr[mid].offsetSeconds ?? -1;
+    if (off <= sec) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans;
+}
+
+function syncChatToVideoTime(force = false) {
+  if (!state.chatHasOffsets || !state.chatComments.length || state.activeSideTab !== 'comments') {
+    return;
+  }
+  const now = performance.now();
+  if (!force && now - state.lastTimeUpdateMs < 240) return;
+  state.lastTimeUpdateMs = now;
+
+  const sessionSec = els.hlsPlayer.currentTime + state.currentPartBaseOffsetSec;
+  const lastIdx = findLastCommentAt(sessionSec);
+
+  if (!force && lastIdx === state.lastSyncedIdx) return;
+  state.lastSyncedIdx = lastIdx;
+
+  // Shift sliding window automatically when playback approaches edge (unless user manually scrolled)
+  const userPaused = Date.now() < state.userScrollPausedUntil;
+  if (!userPaused && state.chatComments.length > CHAT_WINDOW_SIZE && lastIdx >= 0) {
+    if (lastIdx < state.chatWindowStart + 8 || lastIdx >= state.chatWindowEnd - 12) {
+      renderChatWindow(lastIdx);
+    }
+  } else if (!userPaused && !els.chatResumeSyncBtn.classList.contains('hidden')) {
+    els.chatResumeSyncBtn.classList.add('hidden');
+  }
+
+  // O(1) highlight update: clear old active nodes, highlight only current [sessionSec - 8, sessionSec]
+  for (const prevIdx of state.activeChatIndices) {
+    const el = state.chatDomMap.get(prevIdx);
+    if (el) el.classList.remove('active-sync');
+  }
+  state.activeChatIndices = [];
+
+  let lastActiveEl = null;
+  for (let i = lastIdx; i >= 0; i--) {
+    const off = state.chatComments[i].offsetSeconds ?? -1;
+    if (off < 0 || sessionSec - off > 8) break;
+    state.activeChatIndices.push(i);
+    const el = state.chatDomMap.get(i);
+    if (el) {
+      el.classList.add('active-sync');
+      if (!lastActiveEl) lastActiveEl = el;
+    }
+  }
+
+  if (!userPaused && lastActiveEl) {
+    const container = els.chatMessagesList;
+    const targetTop = Math.max(0, lastActiveEl.offsetTop - container.clientHeight * 0.68);
+    if (Math.abs(container.scrollTop - targetTop) > 28) {
+      container.scrollTop = targetTop;
+    }
+  }
+}
+
+els.hlsPlayer.addEventListener('timeupdate', () => syncChatToVideoTime(false));
+els.hlsPlayer.addEventListener('seeked', () => syncChatToVideoTime(true));
 
 // ============================================================================
-// 3. CINEMA PLAYER (R2 HLS / MP4 + PART SELECTOR + GIFTS & SCREENSHOTS)
+// 4. ULTRA-FAST CINEMA PLAYER (HLS VOD BYTE-RANGE + RANGE MP4 + FALLBACK)
 // ============================================================================
+function setVideoLoading(msg) {
+  if (!msg) {
+    els.videoLoadingBadge.classList.add('hidden');
+  } else {
+    els.videoLoadingBadge.textContent = msg;
+    els.videoLoadingBadge.classList.remove('hidden');
+  }
+}
+
+els.hlsPlayer.addEventListener('playing', () => setVideoLoading(''));
+els.hlsPlayer.addEventListener('canplay', () => setVideoLoading(''));
+els.hlsPlayer.addEventListener('waiting', () => setVideoLoading('Menyambung buffer stream...'));
+
 function destroyHls() {
   stopChatPolling();
+  setVideoLoading('');
   if (state.mediaSourceAbort) {
     state.mediaSourceAbort.abort();
     state.mediaSourceAbort = null;
@@ -611,6 +766,8 @@ function destroyHls() {
     state.hlsInstance.destroy();
     state.hlsInstance = null;
   }
+  els.hlsPlayer.onended = null;
+  els.hlsPlayer.onerror = null;
   els.hlsPlayer.pause();
   els.hlsPlayer.removeAttribute('src');
   els.ytPlayer.src = 'about:blank';
@@ -619,10 +776,20 @@ function destroyHls() {
   els.switchPlayerEngineBtn.classList.add('hidden');
 }
 
-async function startMediaSourceStream(video, source, signal) {
-  if (!window.MediaSource) {
-    throw new Error('MediaSource not supported');
+// Fast O(N) 4CC byte finder without String.fromCharCode spread (fixes call-stack crash & main-thread lag)
+function findBoxFourCC(bytes, c0, c1, c2, c3) {
+  const limit = bytes.length - 4;
+  for (let i = 0; i <= limit; i++) {
+    if (bytes[i] === c0 && bytes[i + 1] === c1 && bytes[i + 2] === c2 && bytes[i + 3] === c3) {
+      return i;
+    }
   }
+  return -1;
+}
+
+// Fallback MediaSource fMP4 chunk reader only for unfinalized partial MP4s without .m3u8
+async function startMediaSourceStream(video, source, signal) {
+  if (!window.MediaSource) throw new Error('MediaSource not supported');
   if (state.mediaSourceObjectUrl) {
     URL.revokeObjectURL(state.mediaSourceObjectUrl);
     state.mediaSourceObjectUrl = null;
@@ -632,11 +799,13 @@ async function startMediaSourceStream(video, source, signal) {
   video.src = state.mediaSourceObjectUrl;
 
   await new Promise(resolve => media.addEventListener('sourceopen', resolve, { once: true }));
-  const response = await fetch(source, { signal });
+  const response = await fetch(source, { signal, credentials: 'same-origin' });
   if (!response.ok) throw Error('media_http_' + response.status);
 
   const reader = response.body.getReader();
-  let chunk = new Uint8Array(), position = 0;
+  let chunk = new Uint8Array();
+  let position = 0;
+
   async function read(n) {
     const out = new Uint8Array(n);
     let at = 0;
@@ -665,24 +834,34 @@ async function startMediaSourceStream(video, source, signal) {
     return out;
   };
 
-  let init = new Uint8Array(), buffer, pending;
-  const append = bytes => new Promise((resolve, reject) => {
-    const clean = () => {
-      buffer.removeEventListener('updateend', done);
-      buffer.removeEventListener('error', failed);
-    };
-    const done = () => { clean(); resolve(); };
-    const failed = () => { clean(); reject(Error('media_append_failed')); };
-    buffer.addEventListener('updateend', done);
-    buffer.addEventListener('error', failed);
-    buffer.appendBuffer(bytes);
-  });
+  let init = new Uint8Array();
+  let buffer;
+  let pending;
+
+  const append = bytes =>
+    new Promise((resolve, reject) => {
+      const clean = () => {
+        buffer.removeEventListener('updateend', done);
+        buffer.removeEventListener('error', failed);
+      };
+      const done = () => {
+        clean();
+        resolve();
+      };
+      const failed = () => {
+        clean();
+        reject(Error('media_append_failed'));
+      };
+      buffer.addEventListener('updateend', done);
+      buffer.addEventListener('error', failed);
+      buffer.appendBuffer(bytes);
+    });
 
   while (!signal.aborted) {
     const head = await read(8);
     if (!head) break;
-    const size = new DataView(head.buffer).getUint32(0);
-    const kind = String.fromCharCode(...head.subarray(4));
+    const size = new DataView(head.buffer, head.byteOffset, 8).getUint32(0);
+    const kind = String.fromCharCode(head[4], head[5], head[6], head[7]);
     if (size < 8 || size > 33554432) throw Error('media_box_invalid');
     const body = await read(size - 8);
     if (!body) throw Error('media_truncated');
@@ -691,40 +870,47 @@ async function startMediaSourceStream(video, source, signal) {
     if (kind === 'ftyp') {
       init = box;
     } else if (kind === 'moov') {
-      let codec;
-      for (let i = 0; i < box.length - 8; i++) {
-        if (String.fromCharCode(...box.subarray(i, i + 4)) === 'avcC') {
-          codec = 'avc1.' + Array.from(box.subarray(i + 5, i + 8), b => b.toString(16).padStart(2, '0')).join('');
-          break;
-        }
-      }
-      if (!codec) throw Error('media_codec_missing');
-      const audio = String.fromCharCode(...box).includes('mp4a');
-      const mime = 'video/mp4; codecs="' + codec + (audio ? ',mp4a.40.2' : '') + '"';
+      // 'avcC' = 0x61, 0x76, 0x63, 0x43
+      const avcIdx = findBoxFourCC(box, 0x61, 0x76, 0x63, 0x43);
+      if (avcIdx < 0 || avcIdx + 8 > box.length) throw Error('media_codec_missing');
+      const codec =
+        'avc1.' +
+        Array.from(box.subarray(avcIdx + 5, avcIdx + 8), b => b.toString(16).padStart(2, '0')).join('');
+      // 'mp4a' = 0x6d, 0x70, 0x34, 0x61
+      const hasAudio = findBoxFourCC(box, 0x6d, 0x70, 0x34, 0x61) >= 0;
+      const mime = `video/mp4; codecs="${codec}${hasAudio ? ',mp4a.40.2' : ''}"`;
       if (!MediaSource.isTypeSupported(mime)) {
         await reader.cancel();
         throw Error('mime_not_supported');
       }
       buffer = media.addSourceBuffer(mime);
       await append(join(init, box));
-      for (let i = 0; i < box.length - 32; i++) {
-        if (String.fromCharCode(...box.subarray(i, i + 4)) === 'mvhd') {
-          const v = new DataView(box.buffer);
-          const version = box[i + 4];
-          const scale = v.getUint32(i + (version === 1 ? 24 : 16));
-          const duration = version === 1 ? Number(v.getBigUint64(i + 28)) : v.getUint32(i + 20);
-          if (scale && duration) media.duration = duration / scale;
-          break;
-        }
+      // 'mvhd' = 0x6d, 0x76, 0x68, 0x64
+      const mvhdIdx = findBoxFourCC(box, 0x6d, 0x76, 0x68, 0x64);
+      if (mvhdIdx >= 0 && mvhdIdx + 32 <= box.length) {
+        const v = new DataView(box.buffer, box.byteOffset, box.byteLength);
+        const version = box[mvhdIdx + 4];
+        const scale = v.getUint32(mvhdIdx + (version === 1 ? 24 : 16));
+        const duration =
+          version === 1 ? Number(v.getBigUint64(mvhdIdx + 28)) : v.getUint32(mvhdIdx + 20);
+        if (scale && duration) media.duration = duration / scale;
       }
     } else if (kind === 'moof') {
       pending = box;
     } else if (kind === 'mdat' && pending && buffer) {
-      while (buffer.buffered.length && buffer.buffered.end(buffer.buffered.length - 1) - video.currentTime > 45 && !signal.aborted) {
+      while (
+        buffer.buffered.length &&
+        buffer.buffered.end(buffer.buffered.length - 1) - video.currentTime > 30 &&
+        !signal.aborted
+      ) {
         await new Promise(r => setTimeout(r, 250));
       }
       if (signal.aborted) break;
-      if (video.currentTime > 120 && buffer.buffered.length && buffer.buffered.start(0) < video.currentTime - 90) {
+      if (
+        video.currentTime > 120 &&
+        buffer.buffered.length &&
+        buffer.buffered.start(0) < video.currentTime - 90
+      ) {
         await new Promise(resolve => {
           buffer.addEventListener('updateend', resolve, { once: true });
           buffer.remove(0, video.currentTime - 60);
@@ -737,24 +923,54 @@ async function startMediaSourceStream(video, source, signal) {
   if (!signal.aborted && media.readyState === 'open') media.endOfStream();
 }
 
-function attachHlsOrMp4ToVideo(url) {
+function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
   if (state.hlsInstance) {
     state.hlsInstance.destroy();
     state.hlsInstance = null;
   }
   if (!url) return;
-  if (url.includes('.mp4')) {
+  setVideoLoading('Memuat stream cepat...');
+
+  const isMp4 = url.includes('.mp4') && !url.includes('.m3u8');
+  if (isMp4) {
+    els.hlsPlayer.onerror = () => {
+      els.hlsPlayer.onerror = null;
+      if (onFatalError) onFatalError(new Error('native_mp4_failed'));
+    };
     els.hlsPlayer.src = url;
     els.hlsPlayer.play().catch(() => {});
     return;
   }
+
   if (window.Hls && Hls.isSupported()) {
-    const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+    const hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+      startFragPrefetch: true,
+      maxBufferLength: 25,
+      maxMaxBufferLength: 60,
+      backBufferLength: 30,
+      xhrSetup: xhr => {
+        xhr.withCredentials = true;
+      }
+    });
     state.hlsInstance = hls;
     hls.loadSource(url);
     hls.attachMedia(els.hlsPlayer);
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       els.hlsPlayer.play().catch(() => {});
+    });
+    let recoveredOnce = false;
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (!data.fatal) return;
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recoveredOnce) {
+        recoveredOnce = true;
+        hls.recoverMediaError();
+        return;
+      }
+      hls.destroy();
+      if (state.hlsInstance === hls) state.hlsInstance = null;
+      if (onFatalError) onFatalError(new Error(data.details || 'hls_fatal_error'));
     });
   } else if (els.hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
     els.hlsPlayer.src = url;
@@ -765,10 +981,11 @@ function attachHlsOrMp4ToVideo(url) {
 async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
   showToast(`Memuat stream & detail ${item.nickname}...`);
   try {
-    const d = await getReplayDetailWithFallback(item.dataId);
+    const d = await getReplayDetail(item.dataId);
     destroyHls();
     state.currentPlayingReplay = d;
     state.currentPartIdx = 0;
+    state.currentPartBaseOffsetSec = 0;
     els.playerSection.classList.remove('hidden');
     switchSideTab(defaultSideTab);
 
@@ -779,13 +996,13 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
     els.playerQualitySelect.classList.add('hidden');
     els.playerRecordBtn.classList.add('hidden');
 
-    // Render Side Panel Subtab 2: Top Gifter, Gifts & Daftar Download MP4
     renderSideGiftsAndFans(d);
-    // Render Side Panel Subtab 3: Screenshots & Leaderboard
     renderSideScreenshotsAndLeaderboard(d);
 
-    // Load Komentar untuk sesi ini (dengan perhitungan offset dari waktu mulai rekaman pertama)
-    const refStart = d.recordings?.[0]?.startedAt || d.startedAt || '';
+    const recs = d.recordings || [];
+    const refStart = recs[0]?.startedAt || d.startedAt || '';
+    const refStartMs = refStart ? Date.parse(refStart) : 0;
+
     loadCommentsForPlayer({
       mode: 'session',
       platform: d.platform,
@@ -794,13 +1011,9 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       startedAt: refStart
     });
 
-    const recs = d.recordings || [];
-
-    // Setup tombol download modal
     els.playerDownloadMp4Btn.classList.remove('hidden');
     els.playerDownloadMp4Btn.onclick = () => openDownloadModal(d);
 
-    // Setup tombol ganti engine player (Cinema / Official)
     els.switchPlayerEngineBtn.classList.remove('hidden');
     const updateSwitchEngineLabel = () => {
       els.switchPlayerEngineBtn.textContent =
@@ -813,7 +1026,6 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       playPart(state.currentPartIdx);
     };
 
-    // Setup pemilih bagian jika multi-part
     if (recs.length > 1) {
       els.playerPartSelect.classList.remove('hidden');
       els.playerPartSelect.innerHTML = recs
@@ -823,8 +1035,7 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
         )
         .join('');
       els.playerPartSelect.onchange = e => {
-        const idx = Number(e.target.value) || 0;
-        playPart(idx);
+        playPart(Number(e.target.value) || 0);
       };
     } else {
       els.playerPartSelect.classList.add('hidden');
@@ -836,8 +1047,20 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
         els.playerPartSelect.value = String(idx);
       }
       const chosen = recs[idx] || recs[0];
+
+      // Compute session offset for multi-part sync chat accuracy
+      if (chosen?.startedAt && refStartMs > 0) {
+        state.currentPartBaseOffsetSec = Math.max(
+          0,
+          Math.round((Date.parse(chosen.startedAt) - refStartMs) / 1000)
+        );
+      } else {
+        state.currentPartBaseOffsetSec = 0;
+      }
+
       if (!chosen) {
         if (d.youtubeId) {
+          setVideoLoading('');
           els.hlsPlayer.classList.add('hidden');
           els.ytPlayer.classList.remove('hidden');
           els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&rel=0`;
@@ -850,11 +1073,17 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
       const playerUrl =
         chosen.playerUrl || (chosen.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${chosen.run}` : '');
 
+      if (state.mediaSourceAbort) {
+        state.mediaSourceAbort.abort();
+        state.mediaSourceAbort = null;
+      }
+      if (state.hlsInstance) {
+        state.hlsInstance.destroy();
+        state.hlsInstance = null;
+      }
+
       if (state.playerEngine === 'official' && playerUrl) {
-        if (state.mediaSourceAbort) {
-          state.mediaSourceAbort.abort();
-          state.mediaSourceAbort = null;
-        }
+        setVideoLoading('');
         els.hlsPlayer.pause();
         els.hlsPlayer.classList.add('hidden');
         els.ytPlayer.classList.remove('hidden');
@@ -862,21 +1091,9 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
         return;
       }
 
-      // Default: Mode Cinema Player (MediaSource chunked streaming reader)
       els.ytPlayer.classList.add('hidden');
       els.ytPlayer.src = 'about:blank';
       els.hlsPlayer.classList.remove('hidden');
-
-      if (state.mediaSourceAbort) {
-        state.mediaSourceAbort.abort();
-        state.mediaSourceAbort = null;
-      }
-      const abortCtrl = new AbortController();
-      state.mediaSourceAbort = abortCtrl;
-
-      const mp4Url = chosen.mp4Url
-        ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
-        : '';
 
       els.hlsPlayer.onended = () => {
         if (state.currentPartIdx + 1 < recs.length) {
@@ -885,24 +1102,59 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'comments') {
         }
       };
 
-      try {
-        if (!mp4Url) throw new Error('No MP4 URL');
-        await startMediaSourceStream(els.hlsPlayer, mp4Url, abortCtrl.signal);
-        els.hlsPlayer.play().catch(() => {});
-      } catch (err) {
-        if (abortCtrl.signal.aborted) return;
-        console.warn('Cinema player fallback ke official embed:', err);
+      const partM3u8 = chosen.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
+      const rawMp4 = chosen.mp4Url
+        ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
+        : '';
+
+      const fallbackToChunkedOrEmbed = async () => {
+        if (rawMp4) {
+          const abortCtrl = new AbortController();
+          state.mediaSourceAbort = abortCtrl;
+          try {
+            setVideoLoading('Memuat stream fMP4 parsial...');
+            await startMediaSourceStream(els.hlsPlayer, rawMp4, abortCtrl.signal);
+            els.hlsPlayer.play().catch(() => {});
+            return;
+          } catch (err) {
+            if (abortCtrl.signal.aborted) return;
+          }
+        }
         if (playerUrl) {
+          setVideoLoading('');
           state.playerEngine = 'official';
           updateSwitchEngineLabel();
           els.hlsPlayer.classList.add('hidden');
           els.ytPlayer.classList.remove('hidden');
           els.ytPlayer.src = playerUrl;
-        } else if (mp4Url) {
-          els.hlsPlayer.src = mp4Url;
-          els.hlsPlayer.play().catch(() => {});
         }
+      };
+
+      // Priority 1: Fast HLS VOD Byte-Range via /api/hls-proxy (instant start & instant seek!)
+      if (partM3u8) {
+        attachHlsOrMp4ToVideo(`/api/hls-proxy?url=${encodeURIComponent(partM3u8)}`, {
+          onFatalError: () => {
+            if (rawMp4) {
+              attachHlsOrMp4ToVideo(`/api/hls-proxy?url=${encodeURIComponent(rawMp4)}`, {
+                onFatalError: fallbackToChunkedOrEmbed
+              });
+            } else {
+              fallbackToChunkedOrEmbed();
+            }
+          }
+        });
+        return;
       }
+
+      // Priority 2: Newly ended partial MP4 via HTTP 206 Range Proxy, with MediaSource fallback
+      if (rawMp4) {
+        attachHlsOrMp4ToVideo(`/api/hls-proxy?url=${encodeURIComponent(rawMp4)}`, {
+          onFatalError: fallbackToChunkedOrEmbed
+        });
+        return;
+      }
+
+      fallbackToChunkedOrEmbed();
     }
 
     playPart(0);
@@ -1074,6 +1326,7 @@ function renderSideScreenshotsAndLeaderboard(d) {
 function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, liveObj, recId }) {
   destroyHls();
   state.currentPlayingLive = liveObj || null;
+  state.currentPartBaseOffsetSec = 0;
   els.playerSection.classList.remove('hidden');
   switchSideTab('comments');
 
@@ -1141,42 +1394,17 @@ els.closePlayerBtn.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 4. MEMBERS & OSHI / AUTO-RECORD CONFIGURATION
+// 5. MEMBERS, OSHI, AUTO-RECORD & TELEGRAM BOT SETTINGS
 // ============================================================================
 async function loadMembers() {
   try {
-    let list = [];
-    try {
-      const res = await fetch('/api/members');
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.data) && json.data.length > 0) {
-        list = json.data;
-      }
-    } catch {}
-
-    if (list.length === 0) {
-      const raw = await fetchJkcDirect('/api/member', { group: 'jkt48' });
-      const arr = Array.isArray(raw) ? raw : raw?.members || [];
-      list = arr
-        .filter(m => !m.is_graduate && (!m.group || m.group === 'jkt48'))
-        .map(m => ({
-          id: m._id || m.url || m.name,
-          name: m.name,
-          nicknames: m.nicknames?.length
-            ? m.nicknames
-            : m.nickname
-              ? [m.nickname]
-              : [m.name.split(' ')[0]],
-          img: normalizeMediaUrlClient(m.img_alt || m.img || ''),
-          url: m.url || '',
-          generation: m.generation || ''
-        }))
-        .sort((a, b) => (a.nicknames[0] || a.name).localeCompare(b.nicknames[0] || b.name));
+    const res = await apiFetch('/api/members');
+    const json = await res.json();
+    if (json.ok && Array.isArray(json.data)) {
+      state.members = json.data;
+      renderMemberChips();
+      renderOshiPanel();
     }
-
-    state.members = list;
-    renderMemberChips();
-    renderOshiPanel();
   } catch (err) {
     console.error('Gagal memuat daftar member:', err);
   }
@@ -1191,7 +1419,7 @@ function renderMemberChips() {
       const nick = m.nicknames?.[0] || m.name;
       const activeClass =
         state.selectedMember.toLowerCase() === nick.toLowerCase() ? 'active' : '';
-      const isOshi = state.oshiConfig.oshiList.some(
+      const isOshi = (state.oshiConfig.oshiList || []).some(
         o => o.toLowerCase() === nick.toLowerCase()
       );
       const avatarContent = m.img
@@ -1208,21 +1436,18 @@ function renderMemberChips() {
     .join('');
 
   els.memberChipsContainer.innerHTML = chipsHtml;
-
-  els.memberChipsContainer.querySelectorAll('.member-chip').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const nick = btn.dataset.nick;
-      if (state.selectedMember.toLowerCase() === nick.toLowerCase()) {
-        state.selectedMember = '';
-      } else {
-        state.selectedMember = nick;
-      }
-      state.page = 1;
-      renderMemberChips();
-      loadReplays();
-    });
-  });
 }
+
+els.memberChipsContainer.addEventListener('click', e => {
+  const btn = e.target.closest('.member-chip');
+  if (!btn) return;
+  const nick = btn.dataset.nick;
+  state.selectedMember =
+    state.selectedMember.toLowerCase() === nick.toLowerCase() ? '' : nick;
+  state.page = 1;
+  renderMemberChips();
+  loadReplays();
+});
 
 els.resetMemberBtn.addEventListener('click', () => {
   state.selectedMember = '';
@@ -1231,25 +1456,37 @@ els.resetMemberBtn.addEventListener('click', () => {
   loadReplays();
 });
 
+function syncConfigToInputs() {
+  const cfg = state.oshiConfig;
+  els.autoRecordToggle.checked = Boolean(cfg.autoRecordEnabled);
+  els.modeAllRadio.checked = cfg.autoRecordMode === 'all';
+  els.modeOshiRadio.checked = cfg.autoRecordMode !== 'all';
+  els.oshiSelectionSection.style.opacity = cfg.autoRecordMode === 'all' ? '0.55' : '1';
+  if (cfg.maskedApiKey) {
+    els.jkcApiKeyInput.placeholder = `Key Aktif: ${cfg.maskedApiKey}`;
+  }
+  els.telegramToggle.checked = cfg.telegramEnabled !== false;
+  els.tgModeSelect.value = cfg.telegramMode === 'oshi' ? 'oshi' : 'all';
+  if (cfg.telegramChatId) {
+    els.tgChatIdInput.value = cfg.telegramChatId;
+  }
+  if (cfg.maskedTelegramToken) {
+    els.tgBotTokenInput.placeholder = `Token Aktif: ${cfg.maskedTelegramToken}`;
+  }
+}
+
 async function loadOshiConfig() {
   try {
-    const res = await fetch('/api/oshi');
+    const res = await apiFetch('/api/oshi');
     const json = await res.json();
     if (json.ok && json.data) {
       state.oshiConfig = json.data;
-      els.autoRecordToggle.checked = Boolean(state.oshiConfig.autoRecordEnabled);
-      els.modeAllRadio.checked = state.oshiConfig.autoRecordMode === 'all';
-      els.modeOshiRadio.checked = state.oshiConfig.autoRecordMode !== 'all';
-      els.oshiSelectionSection.style.opacity =
-        state.oshiConfig.autoRecordMode === 'all' ? '0.45' : '1';
-      if (state.oshiConfig.maskedApiKey) {
-        els.jkcApiKeyInput.placeholder = `Key Aktif: ${state.oshiConfig.maskedApiKey}`;
-      }
+      syncConfigToInputs();
       renderMemberChips();
       renderOshiPanel();
     }
   } catch (err) {
-    console.error('Gagal memuat konfigurasi Oshi:', err);
+    console.error('Gagal memuat konfigurasi:', err);
   }
 }
 
@@ -1259,9 +1496,12 @@ async function saveOshiConfig(extraPayload = {}) {
       autoRecordEnabled: state.oshiConfig.autoRecordEnabled,
       autoRecordMode: state.oshiConfig.autoRecordMode,
       oshiList: state.oshiConfig.oshiList,
+      telegramEnabled: els.telegramToggle.checked,
+      telegramMode: els.tgModeSelect.value,
+      telegramChatId: els.tgChatIdInput.value.trim(),
       ...extraPayload
     };
-    const res = await fetch('/api/oshi', {
+    const res = await apiFetch('/api/oshi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1269,11 +1509,7 @@ async function saveOshiConfig(extraPayload = {}) {
     const json = await res.json();
     if (json.ok) {
       state.oshiConfig = json.data;
-      els.oshiSelectionSection.style.opacity =
-        state.oshiConfig.autoRecordMode === 'all' ? '0.45' : '1';
-      if (state.oshiConfig.maskedApiKey) {
-        els.jkcApiKeyInput.placeholder = `Key Aktif: ${state.oshiConfig.maskedApiKey}`;
-      }
+      syncConfigToInputs();
       renderMemberChips();
       renderOshiPanel();
       showToast('Pengaturan tersimpan!');
@@ -1372,8 +1608,100 @@ els.saveJkcKeyBtn.addEventListener('click', async () => {
   loadReplays(true);
 });
 
+// Telegram Settings & Actions
+els.telegramToggle.addEventListener('change', () => saveOshiConfig());
+els.tgModeSelect.addEventListener('change', () => saveOshiConfig());
+
+els.saveTgBtn.addEventListener('click', async () => {
+  const tok = els.tgBotTokenInput.value.trim();
+  const extra = { publicAppUrl: window.location.origin };
+  if (tok) extra.telegramBotToken = tok;
+  await saveOshiConfig(extra);
+  els.tgBotTokenInput.value = '';
+});
+
+els.tgDetectChatBtn.addEventListener('click', async () => {
+  els.tgDetectChatBtn.disabled = true;
+  els.tgDetectChatBtn.textContent = 'Mencari...';
+  try {
+    const res = await apiFetch('/api/telegram/detect-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ botToken: els.tgBotTokenInput.value.trim() })
+    });
+    const json = await res.json();
+    if (!json.ok) {
+      showToast(json.error || 'Gagal mendeteksi Chat ID');
+      return;
+    }
+    els.tgChatIdInput.value = json.chatId;
+    els.tgBotTokenInput.value = '';
+    if (json.data) {
+      state.oshiConfig = json.data;
+      syncConfigToInputs();
+    }
+    showToast(`Berhasil! Chat ID terdeteksi: ${json.chatId} (${json.label})`);
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  } finally {
+    els.tgDetectChatBtn.disabled = false;
+    els.tgDetectChatBtn.textContent = '🔍 Deteksi ID';
+  }
+});
+
+els.testTgBtn.addEventListener('click', async () => {
+  els.testTgBtn.disabled = true;
+  els.testTgBtn.textContent = 'Mengirim...';
+  try {
+    const tok = els.tgBotTokenInput.value.trim();
+    const chatId = els.tgChatIdInput.value.trim();
+    if (tok || chatId) {
+      await saveOshiConfig(tok ? { telegramBotToken: tok } : {});
+      els.tgBotTokenInput.value = '';
+    }
+    const res = await apiFetch('/api/telegram/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ botToken: tok, chatId })
+    });
+    const json = await res.json();
+    showToast(json.ok ? json.message : `Gagal: ${json.error}`);
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  } finally {
+    els.testTgBtn.disabled = false;
+    els.testTgBtn.textContent = '📨 Tes Notifikasi';
+  }
+});
+
+els.webhookTgBtn.addEventListener('click', async () => {
+  els.webhookTgBtn.disabled = true;
+  try {
+    const tok = els.tgBotTokenInput.value.trim();
+    const res = await apiFetch('/api/telegram/set-webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        botToken: tok,
+        originUrl: window.location.origin
+      })
+    });
+    const json = await res.json();
+    if (json.ok) {
+      els.tgBotTokenInput.value = '';
+      showToast('Webhook Bot Telegram aktif 24 jam di Cloud!');
+    } else {
+      showToast(`Gagal: ${json.error}`);
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`);
+  } finally {
+    els.webhookTgBtn.disabled = false;
+  }
+});
+
 // ============================================================================
-// 5. REPLAY LIVE (100% FROM JKT48CONNECT /api/recent)
+// 6. REPLAY LIVE (SERVER-AUTHENTICATED /api/replays)
 // ============================================================================
 async function loadReplays(force = false) {
   els.replaysGrid.innerHTML = `
@@ -1392,60 +1720,19 @@ async function loadReplays(force = false) {
       platform: state.platform,
       refresh: force ? '1' : '0'
     });
-    let items = [];
-    try {
-      const res = await fetch(`/api/replays?${params.toString()}`);
-      const json = await res.json();
-      if (json.quota && json.quota.limit) {
-        els.jkcQuotaBadge.textContent = `Kuota API: ${json.quota.remaining}/${json.quota.limit}`;
-      }
-      if (Array.isArray(json.data) && json.data.length > 0) {
-        items = json.data;
-      }
-    } catch {}
-
-    // Fallback langsung dari browser ke api.jkt48connect.app jika di Netlify IP cloud diblokir
-    if (items.length === 0) {
-      const typeParam =
-        state.platform === 'IDN' ? 'idn' : state.platform === 'SHOWROOM' ? 'showroom' : 'all';
-      const hasFilter = Boolean(state.selectedMember.trim() || state.searchQuery.trim());
-      const raw = await fetchJkcDirect('/api/recent', {
-        page: state.page,
-        perpage: hasFilter ? 60 : 24,
-        group: 'jkt48',
-        type: typeParam,
-        sort: 'date',
-        order: '-1'
-      });
-      const rawList = Array.isArray(raw?.recents) ? raw.recents : Array.isArray(raw) ? raw : [];
-      items = rawList.map(formatRecentItemClient);
-      if (state.selectedMember.trim()) {
-        const mLower = state.selectedMember.trim().toLowerCase();
-        items = items.filter(
-          it =>
-            it.nickname.toLowerCase().includes(mLower) ||
-            it.memberName.toLowerCase().includes(mLower) ||
-            it.title.toLowerCase().includes(mLower)
-        );
-      }
-      if (state.searchQuery.trim()) {
-        const qLower = state.searchQuery.trim().toLowerCase();
-        items = items.filter(
-          it =>
-            it.title.toLowerCase().includes(qLower) ||
-            it.memberName.toLowerCase().includes(qLower) ||
-            it.nickname.toLowerCase().includes(qLower)
-        );
-      }
+    const res = await apiFetch(`/api/replays?${params.toString()}`);
+    const json = await res.json();
+    if (json.quota && json.quota.limit) {
+      els.jkcQuotaBadge.textContent = `Kuota API: ${json.quota.remaining}/${json.quota.limit}`;
     }
-
-    state.replays = items;
+    state.replays = Array.isArray(json.data) ? json.data : [];
     renderReplaysGrid();
 
     const hasFilter = Boolean(state.selectedMember || state.searchQuery);
     els.prevPageBtn.classList.toggle('hidden', state.page <= 1 || hasFilter);
     els.nextPageBtn.classList.toggle('hidden', state.replays.length < 20 || hasFilter);
   } catch (err) {
+    if (!state.authenticated) return;
     els.replaysGrid.innerHTML = `
       <div class="state-box">
         <h3>Gagal memuat daftar Replay</h3>
@@ -1487,9 +1774,9 @@ function renderReplaysGrid() {
           <div class="thumb-wrap">
             <span class="platform-pill ${isIdn ? 'idn' : 'sr'}">${item.platform}</span>
             <span class="age-badge" style="background:${isReady ? 'rgba(5, 150, 105, 0.9)' : 'rgba(180, 83, 9, 0.88)'}">
-              ${isReady ? '▶ Replay Siap' : '⏳ Diproses'}
+              ${isReady ? '▶ Replay Siap' : '⏳ Baru Selesai'}
             </span>
-            <img src="${escapeHtml(item.thumb || item.avatar)}" alt="${escapeHtml(item.title)}" loading="lazy" />
+            <img src="${escapeHtml(item.thumb || item.avatar)}" alt="${escapeHtml(item.title)}" loading="lazy" decoding="async" />
             ${item.durationSeconds ? `<span class="duration-badge">${formatSeconds(item.durationSeconds)}</span>` : ''}
           </div>
           <div class="card-body">
@@ -1508,38 +1795,33 @@ function renderReplaysGrid() {
       `;
     })
     .join('');
-
-  els.replaysGrid.querySelectorAll('[data-play-idx]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const item = state.replays[Number(btn.dataset.playIdx)];
-      if (item) openAndPlayJkcReplay(item, 'comments');
-    });
-  });
-
-  els.replaysGrid.querySelectorAll('[data-dl-idx]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const item = state.replays[Number(btn.dataset.dlIdx)];
-      if (item) triggerDirectDownloadForReplay(item);
-    });
-  });
-
-  els.replaysGrid.querySelectorAll('[data-gift-idx]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const item = state.replays[Number(btn.dataset.giftIdx)];
-      if (item) openAndPlayJkcReplay(item, 'gifts');
-    });
-  });
-
-  els.replaysGrid.querySelectorAll('[data-replay-idx]').forEach(card => {
-    card.addEventListener('click', () => {
-      const item = state.replays[Number(card.dataset.replayIdx)];
-      if (item) openAndPlayJkcReplay(item, 'comments');
-    });
-  });
 }
+
+els.replaysGrid.addEventListener('click', e => {
+  const playBtn = e.target.closest('[data-play-idx]');
+  if (playBtn) {
+    const item = state.replays[Number(playBtn.dataset.playIdx)];
+    if (item) openAndPlayJkcReplay(item, 'comments');
+    return;
+  }
+  const dlBtn = e.target.closest('[data-dl-idx]');
+  if (dlBtn) {
+    const item = state.replays[Number(dlBtn.dataset.dlIdx)];
+    if (item) openDownloadModal(item);
+    return;
+  }
+  const giftBtn = e.target.closest('[data-gift-idx]');
+  if (giftBtn) {
+    const item = state.replays[Number(giftBtn.dataset.giftIdx)];
+    if (item) openAndPlayJkcReplay(item, 'gifts');
+    return;
+  }
+  const card = e.target.closest('[data-replay-idx]');
+  if (card) {
+    const item = state.replays[Number(card.dataset.replayIdx)];
+    if (item) openAndPlayJkcReplay(item, 'comments');
+  }
+});
 
 els.prevPageBtn.addEventListener('click', () => {
   if (state.page > 1) {
@@ -1589,61 +1871,18 @@ els.refreshBtn.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 6. SEDANG LIVE MONITOR & TRIGGER RECORD
+// 7. SEDANG LIVE MONITOR & TRIGGER RECORD
 // ============================================================================
 async function loadNowLive(force = false) {
   try {
-    let list = null;
-    try {
-      const res = await fetch(`/api/now-live?refresh=${force ? '1' : '0'}`);
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.data) && json.data.length > 0) {
-        list = json.data;
-      }
-    } catch {}
-
-    if (!list) {
-      try {
-        const raw = await fetchJkcDirect('/api/now_live', { group: 'jkt48' });
-        const arr = Array.isArray(raw) ? raw : raw?.data || [];
-        list = arr.map(item => {
-          const isIdn =
-            item.type === 'idn' ||
-            (item.streaming_url_list?.[0]?.url || '').includes('live-video.net') ||
-            (item.img || '').includes('idn.app') ||
-            Boolean(item.chat_room_id);
-          const streamUrls = (item.streaming_url_list || []).map(s => ({
-            label: s.label || `${s.quality || 720}p`,
-            quality: s.quality || 720,
-            url: s.url
-          }));
-          return {
-            id: `${isIdn ? 'idn' : 'sr'}_${item.room_id || item.url_key}_${item.slug || ''}`,
-            name: item.name || item.url_key || 'Member JKT48',
-            urlKey: item.url_key || '',
-            slug: item.slug || '',
-            roomId: item.room_id,
-            dataId: item.data_id || item.notification_data_id || '',
-            platform: isIdn ? 'IDN' : 'SHOWROOM',
-            img: normalizeMediaUrlClient(item.img || item.img_alt || ''),
-            avatar: normalizeMediaUrlClient(item.img_alt || item.img || ''),
-            startedAt: item.started_at,
-            streamUrls,
-            bestStreamUrl: streamUrls[0]?.url || '',
-            isRecording: false
-          };
-        });
-      } catch {
-        list = [];
-      }
-    }
-
-    state.nowLive = list || [];
+    const res = await apiFetch(`/api/now-live?refresh=${force ? '1' : '0'}`);
+    const json = await res.json();
+    state.nowLive = json.ok && Array.isArray(json.data) ? json.data : [];
     els.liveCountBadge.textContent = state.nowLive.length;
     renderLiveMiniBanner();
     renderLiveGrid();
   } catch (err) {
-    console.error('Gagal memuat now-live:', err);
+    if (state.authenticated) console.error('Gagal memuat now-live:', err);
   }
 }
 
@@ -1697,7 +1936,7 @@ function renderLiveGrid() {
     els.liveGrid.innerHTML = `
       <div class="state-box">
         <h3>Tidak ada member JKT48 yang sedang live saat ini</h3>
-        <p>Semua rekaman yang baru saja selesai bisa langsung ditonton di tab <strong>Replay Live</strong>.</p>
+        <p>Aktifkan <strong>Bot Telegram</strong> di tab <strong>DVR &amp; Bot Telegram</strong> agar Anda langsung diberi kabar saat ada member mulai live!</p>
       </div>
     `;
     return;
@@ -1761,7 +2000,7 @@ async function triggerRecordLive(liveItem) {
   }
   try {
     showToast(`Memulai perekaman video + chat ${liveItem.name}...`);
-    const res = await fetch('/api/record/start', {
+    const res = await apiFetch('/api/record/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1793,11 +2032,11 @@ els.refreshLiveBtn.addEventListener('click', () => {
 });
 
 // ============================================================================
-// 7. LOCAL DVR RECORDINGS MANAGER
+// 8. LOCAL DVR RECORDINGS MANAGER
 // ============================================================================
 async function loadRecordings() {
   try {
-    const res = await fetch('/api/recordings');
+    const res = await apiFetch('/api/recordings');
     const json = await res.json();
     if (json.ok) {
       state.recordings = json.data || [];
@@ -1805,7 +2044,7 @@ async function loadRecordings() {
       renderRecordingsList();
     }
   } catch (err) {
-    console.error('Gagal memuat daftar rekaman lokal:', err);
+    if (state.authenticated) console.error('Gagal memuat daftar rekaman lokal:', err);
   }
 }
 
@@ -1814,7 +2053,7 @@ function renderRecordingsList() {
     els.recordingsList.innerHTML = `
       <div class="state-box">
         <h3>Belum ada rekaman lokal</h3>
-        <p>Sistem Auto-Record akan otomatis merekam member pilihan Anda saat mereka mulai live.</p>
+        <p>Sistem Auto-Record di PC lokal akan otomatis merekam member pilihan Anda saat mereka mulai live.</p>
       </div>
     `;
     return;
@@ -1887,7 +2126,7 @@ function renderRecordingsList() {
   els.recordingsList.querySelectorAll('[data-stop-rec]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.stopRec;
-      await fetch('/api/record/stop', {
+      await apiFetch('/api/record/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id })
@@ -1902,7 +2141,7 @@ function renderRecordingsList() {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.delRec;
       if (!confirm('Hapus rekaman lokal ini dari PC?')) return;
-      await fetch(`/api/recordings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await apiFetch(`/api/recordings/${encodeURIComponent(id)}`, { method: 'DELETE' });
       showToast('Rekaman dihapus.');
       loadRecordings();
     });
@@ -1910,15 +2149,16 @@ function renderRecordingsList() {
 }
 
 // ============================================================================
-// 8. INITIALIZATION & PERIODIC POLLING
+// 9. BOOTSTRAP: VERIFY SESSION BEFORE LOADING DATA
 // ============================================================================
-(async function init() {
-  await Promise.all([loadOshiConfig(), loadMembers(), loadNowLive(), loadReplays(), loadRecordings()]);
-
-  setInterval(() => {
-    loadNowLive();
-    if (state.activeTab === 'recordings' || state.recordings.some(r => r.status === 'recording')) {
-      loadRecordings();
+(async function bootstrap() {
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    const json = await res.json();
+    if (json.ok && json.authenticated && json.user?.username) {
+      await onAuthenticated(json.user.username);
+      return;
     }
-  }, 30000);
+  } catch {}
+  showLoginGate();
 })();

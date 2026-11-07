@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JKT48 Replay & DVR Studio — Powered by JKT48Connect</title>
+  <title>JKT48 Replay & DVR Studio — Private Access</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -11,236 +11,324 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <!-- Top Navigation Header -->
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand" id="brandHome">
-        <div class="brand-badge">48</div>
+  <!-- ==================== PRIVATE LOGIN GATE ==================== -->
+  <div id="loginOverlay" class="login-overlay">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="brand-badge" style="width:48px;height:48px;font-size:21px">48</div>
         <div>
-          <div class="brand-title">JKT48 Replay <span class="accent-tag">JKT48CONNECT</span></div>
-          <div class="brand-sub">IDN Live &amp; Showroom • Replay R2, Komentar, Gift &amp; Auto-DVR</div>
+          <h1 class="login-title">JKT48 Replay Studio</h1>
+          <p class="login-sub">Akses Pribadi • Silakan masuk untuk melanjutkan</p>
         </div>
       </div>
 
-      <nav class="nav-tabs">
-        <button class="nav-tab active" data-tab="replays">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-          <span>Replay Live</span>
-        </button>
-        <button class="nav-tab" data-tab="live">
-          <span class="live-dot-pulse"></span>
-          <span>Sedang Live</span>
-          <span class="badge-count" id="liveCountBadge">0</span>
-        </button>
-        <button class="nav-tab" data-tab="recordings">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>
-          <span>Auto-Record DVR</span>
-          <span class="badge-count secondary" id="recCountBadge">0</span>
-        </button>
-      </nav>
-
-      <div class="search-actions">
-        <form id="searchForm" class="search-box">
-          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-          <input type="text" id="searchInput" placeholder="Cari member atau judul live..." autocomplete="off" />
-          <button type="button" id="clearSearchBtn" class="clear-btn hidden" title="Hapus pencarian">&times;</button>
-        </form>
-        <button id="refreshBtn" class="icon-btn" title="Muat Ulang Data Terbaru">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-        </button>
-      </div>
+      <form id="loginForm" class="login-form">
+        <div class="login-field">
+          <label for="loginUsername">Username</label>
+          <input type="text" id="loginUsername" name="username" placeholder="Masukkan username..." autocomplete="username" required />
+        </div>
+        <div class="login-field">
+          <label for="loginPassword">Password</label>
+          <div class="login-pw-wrap">
+            <input type="password" id="loginPassword" name="password" placeholder="Masukkan password..." autocomplete="current-password" required />
+            <button type="button" id="togglePwBtn" class="pw-toggle-btn" title="Tampilkan Password">👁</button>
+          </div>
+        </div>
+        <div id="loginErrorMsg" class="login-error hidden"></div>
+        <button type="submit" id="loginSubmitBtn" class="btn-action login-submit">Masuk ke Studio &rarr;</button>
+      </form>
     </div>
-  </header>
+  </div>
 
-  <main class="container">
-    <!-- Built-in Cinema Player + 3-in-1 Side Panel (Chat, Gift/Fans, Screenshots) -->
-    <section id="playerSection" class="player-section hidden">
-      <div class="player-card">
-        <div class="player-header">
-          <div class="player-meta">
-            <span id="playerPlatformBadge" class="platform-pill idn">IDN LIVE</span>
-            <h2 id="playerTitle">Memuat tayangan...</h2>
-          </div>
-          <div class="player-controls-top">
-            <select id="playerPartSelect" class="quality-select hidden" title="Pilih Bagian Video"></select>
-            <select id="playerQualitySelect" class="quality-select hidden" title="Pilih Kualitas"></select>
-            <button id="switchPlayerEngineBtn" class="btn-action subtle hidden" title="Ganti Mode Pemutar (Cinema / Player JKT48Connect)">🔄 Ganti Player</button>
-            <button id="toggleChatPanelBtn" class="btn-action subtle">Panel Samping</button>
-            <button id="playerRecordBtn" class="btn-action record hidden">
-              <span class="rec-dot"></span> Rekam + Chat
-            </button>
-            <button id="playerDownloadMp4Btn" class="btn-action subtle hidden">
-              ⬇ Download MP4
-            </button>
-            <button id="closePlayerBtn" class="btn-close-player" title="Tutup Player">&times;</button>
+  <!-- ==================== AUTHENTICATED APP SHELL ==================== -->
+  <div id="appShell" class="hidden">
+    <!-- Top Navigation Header -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand" id="brandHome">
+          <div class="brand-badge">48</div>
+          <div>
+            <div class="brand-title">JKT48 Replay <span class="accent-tag">PRIVATE</span></div>
+            <div class="brand-sub">IDN Live &amp; Showroom • Fast HLS, Sync Chat, Bot Telegram &amp; DVR</div>
           </div>
         </div>
 
-        <div class="player-split-layout" id="playerSplitLayout">
-          <div class="video-wrapper" id="videoWrapper">
-            <iframe
-              id="ytPlayer"
-              class="video-frame hidden"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              allowfullscreen
-            ></iframe>
-            <video id="hlsPlayer" class="video-frame hidden" controls playsinline></video>
+        <nav class="nav-tabs">
+          <button class="nav-tab active" data-tab="replays">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span>Replay Live</span>
+          </button>
+          <button class="nav-tab" data-tab="live">
+            <span class="live-dot-pulse"></span>
+            <span>Sedang Live</span>
+            <span class="badge-count" id="liveCountBadge">0</span>
+          </button>
+          <button class="nav-tab" data-tab="recordings">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>
+            <span>DVR &amp; Bot Telegram</span>
+            <span class="badge-count secondary" id="recCountBadge">0</span>
+          </button>
+        </nav>
+
+        <div class="search-actions">
+          <form id="searchForm" class="search-box">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input type="text" id="searchInput" placeholder="Cari member atau judul live..." autocomplete="off" />
+            <button type="button" id="clearSearchBtn" class="clear-btn hidden" title="Hapus pencarian">&times;</button>
+          </form>
+          <button id="refreshBtn" class="icon-btn" title="Muat Ulang Data Terbaru">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+          </button>
+          <div class="user-pill">
+            <span id="authUserBadge">👤 -</span>
+            <button type="button" id="logoutBtn" class="logout-mini-btn" title="Keluar / Logout">Keluar</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <!-- Built-in Cinema Player + 3-in-1 Side Panel (Chat, Gift/Fans, Screenshots) -->
+      <section id="playerSection" class="player-section hidden">
+        <div class="player-card">
+          <div class="player-header">
+            <div class="player-meta">
+              <span id="playerPlatformBadge" class="platform-pill idn">IDN LIVE</span>
+              <h2 id="playerTitle">Memuat tayangan...</h2>
+            </div>
+            <div class="player-controls-top">
+              <select id="playerPartSelect" class="quality-select hidden" title="Pilih Bagian Video"></select>
+              <select id="playerQualitySelect" class="quality-select hidden" title="Pilih Kualitas"></select>
+              <button id="switchPlayerEngineBtn" class="btn-action subtle hidden" title="Ganti Mode Pemutar (Cinema / Player JKT48Connect)">🔄 Ganti Player</button>
+              <button id="toggleChatPanelBtn" class="btn-action subtle">Panel Samping</button>
+              <button id="playerRecordBtn" class="btn-action record hidden">
+                <span class="rec-dot"></span> Rekam + Chat
+              </button>
+              <button id="playerDownloadMp4Btn" class="btn-action subtle hidden">
+                ⬇ Download MP4
+              </button>
+              <button id="closePlayerBtn" class="btn-close-player" title="Tutup Player">&times;</button>
+            </div>
           </div>
 
-          <!-- Side Panel: Komentar, Top Gifter & Gift, Screenshot -->
-          <aside class="chat-panel" id="chatPanel">
-            <div class="side-subtabs">
-              <button class="side-subtab active" data-sidetab="comments">💬 Komentar</button>
-              <button class="side-subtab" data-sidetab="gifts">🎁 Gift &amp; Fans</button>
-              <button class="side-subtab" data-sidetab="screenshots">📸 Foto &amp; Rekap</button>
+          <div class="player-split-layout" id="playerSplitLayout">
+            <div class="video-wrapper" id="videoWrapper">
+              <div id="videoLoadingBadge" class="video-loading-badge hidden">Memuat stream cepat...</div>
+              <iframe
+                id="ytPlayer"
+                class="video-frame hidden"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowfullscreen
+              ></iframe>
+              <video id="hlsPlayer" class="video-frame hidden" controls playsinline preload="auto"></video>
             </div>
 
-            <!-- Subtab 1: Comments -->
-            <div id="sidePanel-comments" class="side-subpanel active">
-              <div class="chat-panel-header">
-                <div class="chat-panel-sub" id="chatPanelSub">Memuat komentar sesi...</div>
-                <button id="refreshCommentsBtn" class="icon-btn" style="width:28px;height:28px" title="Muat Ulang Komentar">↻</button>
+            <!-- Side Panel: Komentar, Top Gifter & Gift, Screenshot -->
+            <aside class="chat-panel" id="chatPanel">
+              <div class="side-subtabs">
+                <button class="side-subtab active" data-sidetab="comments">💬 Komentar</button>
+                <button class="side-subtab" data-sidetab="gifts">🎁 Gift &amp; Fans</button>
+                <button class="side-subtab" data-sidetab="screenshots">📸 Foto &amp; Rekap</button>
               </div>
-              <div class="chat-messages" id="chatMessagesList"></div>
-            </div>
 
-            <!-- Subtab 2: Top Gifter & Gifts -->
-            <div id="sidePanel-gifts" class="side-subpanel hidden">
-              <div class="chat-messages" id="sideGiftsContent">
-                <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat daftar Top Gifter &amp; Gift.</div>
+              <!-- Subtab 1: Comments -->
+              <div id="sidePanel-comments" class="side-subpanel active">
+                <div class="chat-panel-header">
+                  <div class="chat-panel-sub" id="chatPanelSub">Memuat komentar sesi...</div>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <button id="chatResumeSyncBtn" class="btn-action subtle hidden" style="padding:3px 8px;font-size:11px">⬇ Sync</button>
+                    <button id="refreshCommentsBtn" class="icon-btn" style="width:28px;height:28px" title="Muat Ulang Komentar">↻</button>
+                  </div>
+                </div>
+                <div class="chat-messages" id="chatMessagesList"></div>
+              </div>
+
+              <!-- Subtab 2: Top Gifter & Gifts -->
+              <div id="sidePanel-gifts" class="side-subpanel hidden">
+                <div class="chat-messages" id="sideGiftsContent">
+                  <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat daftar Top Gifter &amp; Gift.</div>
+                </div>
+              </div>
+
+              <!-- Subtab 3: Screenshots & Leaderboard -->
+              <div id="sidePanel-screenshots" class="side-subpanel hidden">
+                <div class="chat-messages" id="sideScreenshotsContent">
+                  <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat Screenshot &amp; Kartu Leaderboard.</div>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="player-footer" id="playerFooterInfo"></div>
+        </div>
+      </section>
+
+      <!-- Live Alert Banner -->
+      <section id="liveMiniBanner" class="live-mini-banner hidden"></section>
+
+      <!-- ==================== TAB 1: REPLAY LIVE ==================== -->
+      <section id="tab-replays" class="tab-panel active">
+        <div class="member-bar-wrap">
+          <div class="member-bar-header">
+            <span class="section-label">Filter Member JKT48 <small>(⭐ = Oshi Pilihan)</small></span>
+            <button id="resetMemberBtn" class="text-btn hidden">Reset Filter Member</button>
+          </div>
+          <div class="member-chips" id="memberChipsContainer"></div>
+        </div>
+
+        <div class="filter-toolbar">
+          <div class="platform-Segment">
+            <button class="seg-btn active" data-platform="ALL">Semua Platform</button>
+            <button class="seg-btn" data-platform="IDN">
+              <span class="dot idn"></span> IDN Live
+            </button>
+            <button class="seg-btn" data-platform="SHOWROOM">
+              <span class="dot sr"></span> SHOWROOM
+            </button>
+          </div>
+
+          <div class="toolbar-right">
+            <span class="result-counter" id="jkcQuotaBadge">API Aktif</span>
+            <span class="result-counter" id="replayResultCounter">Memuat...</span>
+          </div>
+        </div>
+
+        <div id="replaysGrid" class="video-grid"></div>
+
+        <div style="display:flex;justify-content:center;gap:12px;margin-top:26px">
+          <button id="prevPageBtn" class="btn-action subtle hidden">&larr; Halaman Sebelumnya</button>
+          <button id="nextPageBtn" class="btn-action subtle hidden">Halaman Berikutnya &rarr;</button>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 2: SEDANG LIVE ==================== -->
+      <section id="tab-live" class="tab-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Monitor Member Sedang Live + Live Komentar</h2>
+            <p>Tonton langsung stream IDN Live &amp; Showroom beserta komentar penonton secara <em>real-time</em>.</p>
+          </div>
+          <button id="refreshLiveBtn" class="btn-action">Periksa Status Live</button>
+        </div>
+
+        <div id="liveGrid" class="video-grid"></div>
+      </section>
+
+      <!-- ==================== TAB 3: DVR, BOT TELEGRAM & PENGATURAN ==================== -->
+      <section id="tab-recordings" class="tab-panel">
+        <div class="dvr-layout">
+          <div class="dvr-main">
+            <!-- Telegram Bot & Live Alert Card -->
+            <div class="oshi-card" style="margin-bottom:20px;border-color:rgba(56,189,248,0.3)">
+              <div class="oshi-card-header">
+                <div>
+                  <h3 style="display:flex;align-items:center;gap:8px">🤖 Bot &amp; Notifikasi Live Telegram</h3>
+                  <p>Kirim notifikasi otomatis ke Telegram Anda saat member JKT48 mulai live, plus cek <code>/live</code> langsung dari chat Telegram.</p>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="telegramToggle" checked />
+                  <span>Aktif</span>
+                </label>
+              </div>
+
+              <div class="tg-grid">
+                <div>
+                  <label class="mini-label">1. Bot Token (dari @BotFather)</label>
+                  <input type="password" id="tgBotTokenInput" class="api-key-input" style="width:100%" placeholder="Contoh: 7123456:AAH..." autocomplete="off" />
+                </div>
+                <div>
+                  <label class="mini-label">2. Chat ID Tujuan</label>
+                  <div style="display:flex;gap:6px">
+                    <input type="text" id="tgChatIdInput" class="api-key-input" style="flex:1;width:auto" placeholder="Contoh: 123456789" autocomplete="off" />
+                    <button type="button" id="tgDetectChatBtn" class="btn-action subtle" title="Kirim /start ke bot Anda di Telegram lalu klik tombol ini">🔍 Deteksi ID</button>
+                  </div>
+                </div>
+              </div>
+
+              <div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span style="font-size:12.5px;color:var(--text-muted)">Filter Notifikasi:</span>
+                  <select id="tgModeSelect" class="quality-select">
+                    <option value="all">Semua Member JKT48 Live</option>
+                    <option value="oshi">Hanya Oshi Pilihan (⭐)</option>
+                  </select>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <button type="button" id="saveTgBtn" class="btn-action">💾 Simpan Telegram</button>
+                  <button type="button" id="testTgBtn" class="btn-action subtle">📨 Tes Notifikasi</button>
+                  <button type="button" id="webhookTgBtn" class="btn-action subtle hidden" title="Aktifkan balasan perintah /live 24 jam di Netlify">☁️ Aktifkan Webhook</button>
+                </div>
+              </div>
+
+              <div class="tg-help-box">
+                <strong>Cara pasang cepat (1 menit):</strong> Buat bot di Telegram lewat <strong>@BotFather</strong> (ketik <code>/newbot</code>) &rarr; tempel <strong>Bot Token</strong> di atas &rarr; buka bot Anda lalu klik <strong>Start</strong> (<code>/start</code>) &rarr; klik <strong>🔍 Deteksi ID</strong> &rarr; klik <strong>💾 Simpan Telegram</strong> &amp; <strong>📨 Tes Notifikasi</strong>. Perintah bot yang aktif: <code>/live</code>, <code>/oshi</code>, <code>/status</code>, <code>/id</code>.
               </div>
             </div>
 
-            <!-- Subtab 3: Screenshots & Leaderboard -->
-            <div id="sidePanel-screenshots" class="side-subpanel hidden">
-              <div class="chat-messages" id="sideScreenshotsContent">
-                <div style="color:var(--text-muted);font-size:12px;padding:12px">Pilih tayangan replay untuk melihat Screenshot &amp; Kartu Leaderboard.</div>
+            <div class="panel-heading">
+              <div>
+                <h2>Rekaman Lokal Saya (Video + Replay Komentar)</h2>
+                <p>Semua rekaman otomatis menyimpan <strong>Video (.ts/.m3u8)</strong> sekaligus <strong>Log Komentar (`comments.json`)</strong> yang sinkron dengan detik video.</p>
+              </div>
+            </div>
+            <div id="recordingsList" class="recordings-list"></div>
+          </div>
+
+          <aside class="dvr-sidebar">
+            <div class="oshi-card" style="margin-bottom:16px">
+              <h3 style="font-size:14.5px;margin-bottom:6px">🔑 API Key JKT48Connect (Server-Side)</h3>
+              <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Key disimpan aman di sisi server (tidak pernah terekspos ke publik).</p>
+              <div style="display:flex;gap:8px">
+                <input type="password" id="jkcApiKeyInput" class="api-key-input" style="flex:1;width:auto" placeholder="jkc_..." autocomplete="off" />
+                <button id="saveJkcKeyBtn" class="btn-action">Simpan</button>
+              </div>
+            </div>
+
+            <div class="oshi-card">
+              <div class="oshi-card-header">
+                <div>
+                  <h3>Daftar Oshi &amp; Auto-Record</h3>
+                  <p>Member yang dicentang diberi tanda ⭐ dan dipantau untuk Auto-Record / filter Telegram.</p>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="autoRecordToggle" checked />
+                  <span>Aktif</span>
+                </label>
+              </div>
+
+              <div class="auto-mode-box">
+                <label class="radio-card">
+                  <input type="radio" name="autoRecordMode" value="all" id="modeAllRadio" />
+                  <div>
+                    <strong>Rekam Otomatis SEMUA Member</strong>
+                    <small>Siapa pun member JKT48 yang live langsung direkam di PC lokal.</small>
+                  </div>
+                </label>
+                <label class="radio-card">
+                  <input type="radio" name="autoRecordMode" value="oshi" id="modeOshiRadio" checked />
+                  <div>
+                    <strong>Hanya Member Pilihan (Oshi ⭐)</strong>
+                    <small>Hanya merekam otomatis member yang Anda centang di bawah.</small>
+                  </div>
+                </label>
+              </div>
+
+              <div id="oshiSelectionSection">
+                <div class="oshi-search-wrap">
+                  <input type="text" id="oshiFilterInput" placeholder="Cari nama member untuk dipilih..." />
+                </div>
+
+                <div class="oshi-selected-tags" id="oshiSelectedTags"></div>
+
+                <div class="oshi-member-checklist" id="oshiMemberChecklist"></div>
               </div>
             </div>
           </aside>
         </div>
-
-        <div class="player-footer" id="playerFooterInfo"></div>
-      </div>
-    </section>
-
-    <!-- Live Alert Banner -->
-    <section id="liveMiniBanner" class="live-mini-banner hidden"></section>
-
-    <!-- ==================== TAB 1: REPLAY LIVE (100% JKT48CONNECT) ==================== -->
-    <section id="tab-replays" class="tab-panel active">
-      <div class="member-bar-wrap">
-        <div class="member-bar-header">
-          <span class="section-label">Filter Member JKT48 <small>(⭐ = Oshi Auto-Record)</small></span>
-          <button id="resetMemberBtn" class="text-btn hidden">Reset Filter Member</button>
-        </div>
-        <div class="member-chips" id="memberChipsContainer"></div>
-      </div>
-
-      <div class="filter-toolbar">
-        <div class="platform-Segment">
-          <button class="seg-btn active" data-platform="ALL">Semua Platform</button>
-          <button class="seg-btn" data-platform="IDN">
-            <span class="dot idn"></span> IDN Live
-          </button>
-          <button class="seg-btn" data-platform="SHOWROOM">
-            <span class="dot sr"></span> SHOWROOM
-          </button>
-        </div>
-
-        <div class="toolbar-right">
-          <span class="result-counter" id="jkcQuotaBadge">API Aktif</span>
-          <span class="result-counter" id="replayResultCounter">Memuat...</span>
-        </div>
-      </div>
-
-      <div id="replaysGrid" class="video-grid"></div>
-
-      <div style="display:flex;justify-content:center;gap:12px;margin-top:26px">
-        <button id="prevPageBtn" class="btn-action subtle hidden">&larr; Halaman Sebelumnya</button>
-        <button id="nextPageBtn" class="btn-action subtle hidden">Halaman Berikutnya &rarr;</button>
-      </div>
-    </section>
-
-    <!-- ==================== TAB 2: SEDANG LIVE ==================== -->
-    <section id="tab-live" class="tab-panel">
-      <div class="panel-heading">
-        <div>
-          <h2>Monitor Member Sedang Live + Live Komentar</h2>
-          <p>Tonton langsung stream IDN Live &amp; Showroom beserta komentar penonton secara <em>real-time</em>.</p>
-        </div>
-        <button id="refreshLiveBtn" class="btn-action">Periksa Status Live</button>
-      </div>
-
-      <div id="liveGrid" class="video-grid"></div>
-    </section>
-
-    <!-- ==================== TAB 3: DVR & AUTO-RECORD ==================== -->
-    <section id="tab-recordings" class="tab-panel">
-      <div class="dvr-layout">
-        <div class="dvr-main">
-          <div class="panel-heading">
-            <div>
-              <h2>Rekaman Lokal Saya (Video + Replay Komentar)</h2>
-              <p>Semua rekaman otomatis menyimpan <strong>Video (.ts/.m3u8)</strong> sekaligus <strong>Log Komentar (`comments.json`)</strong> yang sinkron dengan detik video.</p>
-            </div>
-          </div>
-          <div id="recordingsList" class="recordings-list"></div>
-        </div>
-
-        <aside class="dvr-sidebar">
-          <div class="oshi-card" style="margin-bottom:16px">
-            <h3 style="font-size:14.5px;margin-bottom:6px">🔑 API Key JKT48Connect</h3>
-            <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Digunakan untuk mengambil daftar Replay R2, Detail Gift, Screenshot, dan Komentar IDN/Showroom.</p>
-            <div style="display:flex;gap:8px">
-              <input type="password" id="jkcApiKeyInput" class="api-key-input" style="flex:1;width:auto" placeholder="jkc_..." />
-              <button id="saveJkcKeyBtn" class="btn-action">Simpan</button>
-            </div>
-          </div>
-
-          <div class="oshi-card">
-            <div class="oshi-card-header">
-              <div>
-                <h3>Pengaturan Perekam Otomatis (Auto-Record)</h3>
-                <p>Sistem memantau setiap 45 detik dan otomatis merekam begitu member mulai live.</p>
-              </div>
-              <label class="toggle-switch">
-                <input type="checkbox" id="autoRecordToggle" checked />
-                <span>Aktif</span>
-              </label>
-            </div>
-
-            <div class="auto-mode-box">
-              <label class="radio-card">
-                <input type="radio" name="autoRecordMode" value="all" id="modeAllRadio" />
-                <div>
-                  <strong>Rekam Otomatis SEMUA Member</strong>
-                  <small>Siapa pun member JKT48 yang live langsung direkam otomatis.</small>
-                </div>
-              </label>
-              <label class="radio-card">
-                <input type="radio" name="autoRecordMode" value="oshi" id="modeOshiRadio" checked />
-                <div>
-                  <strong>Hanya Member Pilihan (Oshi)</strong>
-                  <small>Hanya merekam otomatis member yang Anda centang di bawah.</small>
-                </div>
-              </label>
-            </div>
-
-            <div id="oshiSelectionSection">
-              <div class="oshi-search-wrap">
-                <input type="text" id="oshiFilterInput" placeholder="Cari nama member untuk dipilih..." />
-              </div>
-
-              <div class="oshi-selected-tags" id="oshiSelectedTags"></div>
-
-              <div class="oshi-member-checklist" id="oshiMemberChecklist"></div>
-            </div>
-          </div>
-        </aside>
-      </div>
-    </section>
-  </main>
+      </section>
+    </main>
+  </div>
 
   <!-- Modal Download Video Replay -->
   <div id="downloadModal" class="modal-overlay hidden">

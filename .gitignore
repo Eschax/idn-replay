@@ -1,7 +1,6 @@
 node_modules/
 recordings/
-data/recordings.json
-data/oshi_config.json
+data/*.json
 .agents/
 .netlify/
 .env
