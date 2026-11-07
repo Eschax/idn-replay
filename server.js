@@ -22,7 +22,7 @@ const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const JKT48CONNECT_BASE = 'https://api.jkt48connect.app';
 const DEFAULT_JKC_API_KEY =
-  process.env.JKT48CONNECT_API_KEY || 'jkc_82a84efebf4b67b73fa0c20b7096ea8de1e336c8';
+  process.env.JKT48CONNECT_API_KEY || '';
 
 // ============================================================================
 // 1. STATE & PERSISTENCE

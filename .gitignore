@@ -3,3 +3,5 @@ recordings/
 data/recordings.json
 data/oshi_config.json
 .agents/
+.netlify/
+.env
