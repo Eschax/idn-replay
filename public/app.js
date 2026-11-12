@@ -325,12 +325,13 @@ function formatReplayDetailClient(d) {
   const recordings = (d.recordings || []).map((r, idx) => ({
     part: idx + 1,
     run: r.run,
-    mp4Url: normalizeMediaUrlClient(r.url),
-    streamUrl: normalizeMediaUrlClient(r.stream_url),
-    playerUrl: normalizeMediaUrlClient(r.player_url),
-    durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : 0,
-    sizeBytes: r.bytes || 0,
-    startedAt: r.started_at,
+    mp4Url: normalizeMediaUrlClient(r.url || r.mp4Url),
+    presetMp4Url: r.presetMp4Url || (idx === 0 ? d.presetMp4Url || null : null),
+    streamUrl: normalizeMediaUrlClient(r.stream_url || r.streamUrl),
+    playerUrl: normalizeMediaUrlClient(r.player_url || r.playerUrl),
+    durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : (r.durationSeconds || 0),
+    sizeBytes: r.bytes || r.sizeBytes || 0,
+    startedAt: r.started_at || r.startedAt,
     partial: r.partial
   }));
 
@@ -1954,11 +1955,13 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         state.hlsInstance = null;
       }
 
-      const rawMp4 = chosen?.mp4Url
-        ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
-        : chosen?.url
-          ? normalizeMediaUrlClient(chosen.url) + '?v=2'
-          : '';
+      const rawMp4 = chosen?.presetMp4Url
+        ? chosen.presetMp4Url
+        : chosen?.mp4Url
+          ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
+          : chosen?.url
+            ? normalizeMediaUrlClient(chosen.url) + '?v=2'
+            : '';
       const partM3u8 = chosen?.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
 
       // Reset DOM state of all player hosts

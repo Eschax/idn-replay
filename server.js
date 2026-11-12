@@ -656,7 +656,7 @@ async function fetchPresetCatalog() {
   return presetCache;
 }
 
-function matchPresetYoutubeId(catalog, nickname, startedAt) {
+function matchPresetItem(catalog, nickname, startedAt) {
   if (!catalog || !catalog.items || !nickname || !startedAt) return null;
   const targetMs = Date.parse(startedAt);
   if (!targetMs || Number.isNaN(targetMs)) return null;
@@ -670,7 +670,10 @@ function matchPresetYoutubeId(catalog, nickname, startedAt) {
   });
 
   if (match) {
-    return catalog.map[match.i] || match.i || null;
+    const rawYt = (catalog.map && catalog.map[match.i]) || null;
+    const youtubeId = rawYt && /^[a-zA-Z0-9_-]{11}$/.test(rawYt) ? rawYt : null;
+    const mp4Url = match.u ? (match.u.startsWith('http') ? match.u : `https://jkt48.preset.id${match.u}`) : null;
+    return { youtubeId, mp4Url, item: match };
   }
   return null;
 }
@@ -686,22 +689,26 @@ async function getJkcReplayDetail(dataId, force = false) {
     member: d.member || d.room_info
   });
 
-  // Enrich with Preset YouTube Full Archive if missing
-  if (!base.youtubeId) {
-    try {
-      const catalog = await fetchPresetCatalog();
-      const matchedYtId = matchPresetYoutubeId(catalog, base.nickname, base.startedAt);
-      if (matchedYtId) {
-        base.youtubeId = matchedYtId;
-        base.youtubeUrl = `https://www.youtube.com/watch?v=${matchedYtId}`;
+  // Enrich with Preset YouTube Full Archive & Faststart MP4 mirror
+  try {
+    const catalog = await fetchPresetCatalog();
+    const matched = matchPresetItem(catalog, base.nickname, base.startedAt);
+    if (matched) {
+      if (matched.youtubeId && !base.youtubeId) {
+        base.youtubeId = matched.youtubeId;
+        base.youtubeUrl = `https://www.youtube.com/watch?v=${matched.youtubeId}`;
       }
-    } catch {}
-  }
+      if (matched.mp4Url) {
+        base.presetMp4Url = matched.mp4Url;
+      }
+    }
+  } catch {}
 
   const recordings = (d.recordings || []).map((r, idx) => ({
     part: idx + 1,
     run: r.run,
     mp4Url: normalizeMediaUrl(r.url),
+    presetMp4Url: idx === 0 ? base.presetMp4Url || null : null,
     streamUrl: normalizeMediaUrl(r.stream_url),
     playerUrl: normalizeMediaUrl(r.player_url),
     durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : 0,
