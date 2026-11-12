@@ -23,3 +23,6 @@ node server.js
 Atau klik dua kali file `start.bat` (Windows), lalu buka:
 - **http://localhost:3048**
 
+## Konfigurasi API JKT48Connect
+
+Replay dimuat oleh server agar API key tidak dikirim dari browser. Setelah login, isi API key melalui panel **API Key JKT48Connect (Server-Side)**. Untuk Netlify, atur environment variable `JKT48CONNECT_API_KEY` di Site configuration lalu deploy ulang. Jika key belum tersedia, endpoint replay mengembalikan `503` dan video tidak dapat diputar.

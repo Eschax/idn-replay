@@ -65,6 +65,26 @@ function extractCookie(setCookieHeader) {
   assert.equal(handleRequest.isAllowedStreamUrl('http://127.0.0.1:3048/api/oshi'), false);
   assert.equal(handleRequest.isAllowedStreamUrl('http://169.254.169.254/latest/meta-data'), false);
   assert.equal(handleRequest.isAllowedStreamUrl('file:///etc/passwd'), false);
+  assert.equal(handleRequest.normalizePlaybackUrl('http://127.0.0.1:3048/video.mp4'), '');
+  assert.equal(handleRequest.normalizePlaybackUrl('http://localhost/video.m3u8'), '');
+  assert.equal(handleRequest.normalizePlaybackUrl('file:///video.mp4'), '');
+  assert.equal(
+    handleRequest.normalizePlaybackUrl('https://api.jkt48connect.app/media/video.mp4'),
+    'https://api.jkt48connect.app/media/video.mp4'
+  );
+  assert.equal(
+    handleRequest.resolveReplayPlayerUrl('http://127.0.0.1:8878/replay/123', 'replay-id', '123'),
+    'https://api.jkt48connect.app/replay/replay-id/123'
+  );
+  assert.equal(
+    handleRequest.resolveReplayPlayerUrl('', 'replay-id', 'run/1'),
+    'https://api.jkt48connect.app/replay/replay-id/run%2F1'
+  );
+  assert.equal(handleRequest.resolveReplayPlayerUrl('http://127.0.0.1:8878/replay', 'replay-id', null), '');
+  assert.equal(
+    handleRequest.resolveReplayPlayerUrl('https://cdn.example/replay/123', 'replay-id', '123'),
+    'https://cdn.example/replay/123'
+  );
 
   // 3. Validasi formatRecentItem kontrak
   const card = handleRequest.formatRecentItem({
@@ -81,6 +101,15 @@ function extractCookie(setCookieHeader) {
   assert.equal(card.nickname, 'Trisha');
   assert.equal(card.durationSeconds, 3600);
   assert.equal(card.streamUrl, 'https://api.jkt48connect.app/media/live/live-123/recording.m3u8');
+  const fallbackCard = handleRequest.formatRecentItem({
+    type: 'idn',
+    playback: { stream_url: 'http://127.0.0.1:3048/recording.m3u8' },
+    recording: { stream_url: 'https://api.jkt48connect.app/media/live/fallback/recording.m3u8' }
+  });
+  assert.equal(
+    fallbackCard.streamUrl,
+    'https://api.jkt48connect.app/media/live/fallback/recording.m3u8'
+  );
 
   // 4. Global Auth Gate: semua endpoint data wajib 401 tanpa login
   const protectedEndpoints = [
@@ -126,12 +155,14 @@ function extractCookie(setCookieHeader) {
   });
   assert.equal(login1.status, 200);
   assert.equal(login1.json.user.username, 'escha');
+  assert.equal(login1.json.apiKey, undefined, 'Raw API key must never be returned by login');
   assert.match(login1.headers['set-cookie'], /HttpOnly/);
   const cookie1 = extractCookie(login1.headers['set-cookie']);
 
   const me1 = await invoke('GET', '/api/auth/me', { headers: { cookie: cookie1 } });
   assert.equal(me1.json.authenticated, true);
   assert.equal(me1.json.user.username, 'escha');
+  assert.equal(me1.json.apiKey, undefined, 'Raw API key must never be returned by auth/me');
 
   const login2 = await invoke('POST', '/api/auth/login', {
     bodyObj: { username: 'oshi48', password: 'Oshi48!Nsu_' }

@@ -3,20 +3,10 @@
 // ============================================================================
 
 const CHAT_WINDOW_SIZE = 180;
-const JKC_STORAGE_KEY = 'jkc_client_api_key';
-const JKT48CONNECT_CLIENT_BASE = 'https://api.jkt48connect.app';
-const JKC_DEFAULT_FALLBACK = '';
 
 const state = {
   authenticated: false,
   currentUser: null,
-  apiKey: (function () {
-    try {
-      return localStorage.getItem(JKC_STORAGE_KEY) || JKC_DEFAULT_FALLBACK;
-    } catch {
-      return JKC_DEFAULT_FALLBACK;
-    }
-  })(),
   pollIntervalId: null,
 
   activeTab: 'replays',
@@ -253,11 +243,34 @@ function isLocalhostEnv() {
 }
 
 // ============================================================================
-// 0. CLIENT FORMATTERS & DIRECT JKT48CONNECT FALLBACK
+// 0. CLIENT MEDIA URL VALIDATION
 // ============================================================================
 function normalizeMediaUrlClient(url) {
   if (!url) return '';
   return String(url).replace('https://api.jkt48connect.app:8443/', 'https://api.jkt48connect.app/');
+}
+
+function normalizePlaybackUrlClient(url) {
+  const normalized = normalizeMediaUrlClient(url);
+  if (!normalized) return '';
+  try {
+    const parsedUrl = new URL(normalized);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return '';
+    const host = parsedUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host === '::1' ||
+      host === '::' ||
+      host === '0.0.0.0' ||
+      host.startsWith('127.')
+    ) {
+      return '';
+    }
+  } catch {
+    return '';
+  }
+  return normalized;
 }
 
 function formatRecentItemClient(item) {
@@ -280,9 +293,9 @@ function formatRecentItemClient(item) {
   const points = item.points || item.total_gifts || 0;
   const pointUnit = item.point_unit || (isIdn ? 'idn_gold' : 'showroom_points');
 
-  const streamUrl = normalizeMediaUrlClient(
-    item.playback?.stream_url || item.recording?.stream_url || ''
-  );
+  const streamUrl =
+    normalizePlaybackUrlClient(item.playback?.stream_url) ||
+    normalizePlaybackUrlClient(item.recording?.stream_url);
   const ytVideos = item.youtube_replay?.videos || [];
   const playbackStatus = item.playback?.status || (streamUrl ? 'ready' : 'pending');
   const parts = item.playback?.parts ?? (streamUrl ? 1 : 0);
@@ -325,23 +338,22 @@ function formatReplayDetailClient(d) {
   const recordings = (d.recordings || []).map((r, idx) => ({
     part: idx + 1,
     run: r.run,
-    mp4Url: normalizeMediaUrlClient(r.url || r.mp4Url),
-    presetMp4Url: r.presetMp4Url || (idx === 0 ? d.presetMp4Url || null : null),
-    streamUrl: normalizeMediaUrlClient(r.stream_url || r.streamUrl),
-    playerUrl: normalizeMediaUrlClient(r.player_url || r.playerUrl),
+    mp4Url: normalizePlaybackUrlClient(r.url || r.mp4Url),
+    presetMp4Url: normalizePlaybackUrlClient(r.presetMp4Url || (idx === 0 ? d.presetMp4Url : null)),
+    streamUrl: normalizePlaybackUrlClient(r.stream_url || r.streamUrl),
+    playerUrl: normalizePlaybackUrlClient(r.player_url || r.playerUrl),
     durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : (r.durationSeconds || 0),
     sizeBytes: r.bytes || r.sizeBytes || 0,
     startedAt: r.started_at || r.startedAt,
     partial: r.partial
   }));
 
-  const combinedStreamUrl = normalizeMediaUrlClient(
-    d.playback?.stream_url ||
-      d.recording_session?.stream_url ||
-      d.recording?.stream_url ||
-      recordings[0]?.streamUrl ||
-      ''
-  );
+  const combinedStreamUrl =
+    normalizePlaybackUrlClient(d.playback?.stream_url) ||
+    normalizePlaybackUrlClient(d.recording_session?.stream_url) ||
+    normalizePlaybackUrlClient(d.recording?.stream_url) ||
+    recordings[0]?.streamUrl ||
+    '';
 
   let giftItems = [];
   if (Array.isArray(d.live_info?.gift?.list) && d.live_info.gift.list.length > 0) {
@@ -404,40 +416,22 @@ function formatReplayDetailClient(d) {
   };
 }
 
-async function fetchJkcDirect(endpointPath, params = {}) {
-  const url = new URL(endpointPath, JKT48CONNECT_CLIENT_BASE);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') {
-      url.searchParams.set(k, String(v));
-    }
-  }
-  const key = state.apiKey || JKC_DEFAULT_FALLBACK;
-  if (key) {
-    url.searchParams.set('apikey', key);
-    url.searchParams.set('api_key', key);
-  }
-  
-  let res = null;
-  try {
-    // Try clean simple CORS GET first (no custom headers = no preflight blockage)
-    res = await fetch(url.toString());
-  } catch (err) {
-    // If strict environment requires header, retry with x-api-key
-    res = await fetch(url.toString(), {
-      headers: key ? { 'x-api-key': key } : {}
-    });
-  }
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`JKT48Connect HTTP ${res.status}: ${txt.slice(0, 100) || res.statusText}`);
-  }
-  const quotaRemaining = res.headers.get('x-ratelimit-remaining');
-  const quotaLimit = res.headers.get('x-ratelimit-limit');
-  if (quotaRemaining && quotaLimit && els.jkcQuotaBadge) {
-    els.jkcQuotaBadge.textContent = `Kuota API: ${quotaRemaining}/${quotaLimit}`;
-  }
-  return res.json();
+function sanitizeReplayDetailPlayback(d) {
+  const recordings = (d.recordings || []).map(r => ({
+    ...r,
+    mp4Url: normalizePlaybackUrlClient(r.mp4Url),
+    presetMp4Url: normalizePlaybackUrlClient(r.presetMp4Url),
+    streamUrl: normalizePlaybackUrlClient(r.streamUrl),
+    playerUrl: normalizePlaybackUrlClient(r.playerUrl)
+  }));
+  const streamUrl = normalizePlaybackUrlClient(d.streamUrl);
+  return {
+    ...d,
+    streamUrl,
+    combinedStreamUrl:
+      normalizePlaybackUrlClient(d.combinedStreamUrl) || streamUrl || recordings[0]?.streamUrl || '',
+    recordings
+  };
 }
 
 // ============================================================================
@@ -468,7 +462,7 @@ async function apiFetch(url, options = {}) {
     ...options
   });
   if (res.status === 401 && !url.startsWith('/api/auth/')) {
-    if (!state.authenticated && !state.apiKey) {
+    if (!state.authenticated) {
       showLoginGate('Sesi berakhir. Silakan login kembali.');
     }
     throw new Error('Akses terbatas. Silakan login.');
@@ -483,7 +477,6 @@ els.togglePwBtn.addEventListener('click', () => {
 
 const quickFillAcc1Btn = document.getElementById('quickFillAcc1Btn');
 const quickFillAcc2Btn = document.getElementById('quickFillAcc2Btn');
-const bypassToDirectBtn = document.getElementById('bypassToDirectBtn');
 
 if (quickFillAcc1Btn) {
   quickFillAcc1Btn.addEventListener('click', () => {
@@ -498,22 +491,6 @@ if (quickFillAcc2Btn) {
     els.loginUsername.value = 'oshi48';
     els.loginPassword.focus();
     showToast('Username oshi48 telah diisi. Silakan masukkan password Anda.');
-  });
-}
-
-if (bypassToDirectBtn) {
-  bypassToDirectBtn.addEventListener('click', async () => {
-    let key = state.apiKey;
-    if (!key) {
-      const entered = prompt('Masukkan JKT48Connect API Key Anda (atau tekan OK jika ingin mencoba langsung):', '');
-      if (entered && entered.trim()) {
-        key = entered.trim();
-        state.apiKey = key;
-        try { localStorage.setItem(JKC_STORAGE_KEY, key); } catch {}
-      }
-    }
-    await onAuthenticated('Tamu');
-    showToast('Masuk ke Studio dalam Mode Direct JKT48Connect ⚡');
   });
 }
 
@@ -541,7 +518,7 @@ els.loginForm.addEventListener('submit', async e => {
       // Netlify Edge Access returned HTML
       els.loginErrorMsg.innerHTML = `
         <div>⚠️ Project Netlify terdeteksi dalam mode <strong>Private</strong>.</div>
-        <div style="margin-top:4px;font-size:11.5px">Ubah Project Visibility menjadi <strong>Public</strong> di Dashboard Netlify, atau klik <strong>⚡ Langsung Buka Studio</strong> di bawah untuk langsung menggunakan Mode Direct.</div>
+        <div style="margin-top:4px;font-size:11.5px">Ubah Project Visibility menjadi <strong>Public</strong> di Dashboard Netlify agar fungsi login dan pemutar video dapat digunakan.</div>
       `;
       els.loginErrorMsg.classList.remove('hidden');
       return;
@@ -551,10 +528,6 @@ els.loginForm.addEventListener('submit', async e => {
       els.loginErrorMsg.textContent = json.error || 'Gagal login.';
       els.loginErrorMsg.classList.remove('hidden');
       return;
-    }
-    if (json.apiKey) {
-      state.apiKey = json.apiKey;
-      try { localStorage.setItem(JKC_STORAGE_KEY, json.apiKey); } catch {}
     }
     els.loginPassword.value = '';
     await onAuthenticated(json.user.username);
@@ -608,19 +581,12 @@ async function onAuthenticated(username) {
 // 1. DOWNLOAD MODAL & REPLAY DETAIL HELPER
 // ============================================================================
 async function getReplayDetail(dataId) {
-  try {
-    const res = await apiFetch(`/api/replays/${encodeURIComponent(dataId)}`);
-    const json = await res.json();
-    if (json.ok && json.data) {
-      return json.data;
-    }
-  } catch (err) {
-    console.warn('Gagal memuat detail replay via server:', err.message);
+  const res = await apiFetch(`/api/replays/${encodeURIComponent(dataId)}`);
+  const json = await res.json();
+  if (!res.ok || !json.ok || !json.data) {
+    throw new Error(json.error || 'Gagal memuat detail replay dari server.');
   }
-
-  // Direct fallback ke JKT48Connect
-  const d = await fetchJkcDirect(`/api/recent/${encodeURIComponent(dataId)}`);
-  return formatReplayDetailClient(d);
+  return sanitizeReplayDetailPlayback(json.data);
 }
 
 function closeDownloadModal() {
@@ -944,36 +910,6 @@ async function loadCommentsForPlayer(opts) {
         state.chatSourceLabel = json.source || 'JKT48Connect';
       }
     } catch {}
-
-    // 2. Direct fallback untuk IDN
-    if (!rawComments && opts.platform === 'IDN' && opts.dataId) {
-      try {
-        const directRes = await fetchJkcDirect(`/api/idn-comments/${encodeURIComponent(opts.dataId)}`, {
-          after: opts.after || ''
-        });
-        const comments = Array.isArray(directRes?.comments) ? directRes.comments : [];
-        const startMs = opts.startedAt ? Date.parse(opts.startedAt) : 0;
-        const firstStr = comments[0]?.source_time || comments[0]?.observed_at || '';
-        const baseMs = startMs || (firstStr ? Date.parse(firstStr) : 0);
-        rawComments = comments.map(c => {
-          const tStr = c.source_time || c.observed_at || '';
-          const tMs = tStr ? Date.parse(tStr) : 0;
-          const offsetSeconds =
-            baseMs > 0 && tMs >= baseMs ? Math.round((tMs - baseMs) / 1000) : undefined;
-          return {
-            id: c._id || `${tMs}_${c.user?.name}`,
-            user: c.user?.name || 'Anon',
-            avatar: normalizeMediaUrlClient(c.user?.avatar_url || ''),
-            text: c.comment || '',
-            time: tStr,
-            offsetSeconds
-          };
-        });
-        state.chatSourceLabel = 'JKT48Connect Direct';
-      } catch (err) {
-        console.warn('Direct comments fallback error:', err);
-      }
-    }
 
     if (!rawComments) {
       els.chatMessagesList.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:12px">Riwayat komentar tidak tersedia untuk sesi ini.</div>`;
@@ -1959,9 +1895,7 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         ? chosen.presetMp4Url
         : chosen?.mp4Url
           ? chosen.mp4Url + (chosen.mp4Url.includes('?') ? '&' : '?') + 'v=2'
-          : chosen?.url
-            ? normalizeMediaUrlClient(chosen.url) + '?v=2'
-            : '';
+          : '';
       const partM3u8 = chosen?.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
 
       // Reset DOM state of all player hosts
@@ -2351,7 +2285,7 @@ async function loadMembers() {
   try {
     const res = await apiFetch('/api/members');
     const json = await res.json();
-    if (json.ok && Array.isArray(json.data) && json.data.length > 0) {
+    if (json.ok && Array.isArray(json.data)) {
       state.members = json.data;
       renderMemberChips();
       renderOshiPanel();
@@ -2359,31 +2293,6 @@ async function loadMembers() {
     }
   } catch (err) {
     console.warn('Gagal memuat member via server:', err.message);
-  }
-
-  // Direct fallback ke JKT48Connect
-  try {
-    const raw = await fetchJkcDirect('/api/member', { group: 'jkt48' });
-    const list = Array.isArray(raw) ? raw : raw?.members || [];
-    state.members = list
-      .filter(m => !m.is_graduate && (!m.group || m.group === 'jkt48'))
-      .map(m => ({
-        id: m._id || m.url || m.name,
-        name: m.name,
-        nicknames: m.nicknames?.length
-          ? m.nicknames
-          : m.nickname
-            ? [m.nickname]
-            : [m.name.split(' ')[0]],
-        img: normalizeMediaUrlClient(m.img_alt || m.img || ''),
-        url: m.url || '',
-        generation: m.generation || ''
-      }))
-      .sort((a, b) => (a.nicknames[0] || a.name).localeCompare(b.nicknames[0] || b.name));
-    renderMemberChips();
-    renderOshiPanel();
-  } catch (directErr) {
-    console.warn('Direct members fallback gagal:', directErr);
   }
 }
 
@@ -2689,6 +2598,7 @@ async function loadReplays(force = false) {
   `;
 
   let loadedItems = null;
+  let loadError = '';
 
   // 1. Try server endpoint first
   try {
@@ -2712,69 +2622,12 @@ async function loadReplays(force = false) {
         els.jkcQuotaBadge.textContent = `Kuota API: ${json.quota.remaining}/${json.quota.limit}`;
       }
       loadedItems = json.data;
+    } else {
+      loadError = json?.error || 'Server gagal mengambil data JKT48Connect.';
     }
   } catch (err) {
-    console.warn('Server /api/replays gagal, mencoba fallback direct:', err);
-  }
-
-  // 2. Direct client fallback if server endpoint failed or returned non-JSON/HTML
-  if (!loadedItems) {
-    try {
-      const typeParam =
-        state.platform === 'IDN' ? 'idn' : state.platform === 'SHOWROOM' ? 'showroom' : 'all';
-      const hasFilter = Boolean(state.selectedMember || state.searchQuery);
-      let directJson = null;
-      try {
-        directJson = await fetchJkcDirect('/api/recent', {
-          page: state.page,
-          perpage: hasFilter ? 60 : 24,
-          group: 'jkt48',
-          type: typeParam,
-          sort: 'date',
-          order: '-1'
-        });
-      } catch (firstErr) {
-        // If stored localStorage key was invalid, reset to verified fallback key and retry
-        console.warn('Percobaan pertama direct gagal, reset ke fallback key:', firstErr.message);
-        state.apiKey = JKC_DEFAULT_FALLBACK;
-        try { localStorage.removeItem(JKC_STORAGE_KEY); } catch {}
-        directJson = await fetchJkcDirect('/api/recent', {
-          page: state.page,
-          perpage: hasFilter ? 60 : 24,
-          group: 'jkt48',
-          type: typeParam,
-          sort: 'date',
-          order: '-1'
-        });
-      }
-
-      const rawList = Array.isArray(directJson?.recents)
-        ? directJson.recents
-        : Array.isArray(directJson)
-          ? directJson
-          : [];
-      let formatted = rawList.map(formatRecentItemClient);
-      if (state.selectedMember) {
-        const mLower = state.selectedMember.toLowerCase();
-        formatted = formatted.filter(
-          it =>
-            it.nickname.toLowerCase().includes(mLower) ||
-            it.memberName.toLowerCase().includes(mLower)
-        );
-      }
-      if (state.searchQuery) {
-        const qLower = state.searchQuery.toLowerCase();
-        formatted = formatted.filter(
-          it =>
-            it.title.toLowerCase().includes(qLower) ||
-            it.memberName.toLowerCase().includes(qLower) ||
-            it.nickname.toLowerCase().includes(qLower)
-        );
-      }
-      loadedItems = formatted;
-    } catch (directErr) {
-      console.error('Fallback direct JKT48Connect juga gagal:', directErr);
-    }
+    loadError = err.message;
+    console.error('Server /api/replays gagal:', err);
   }
 
   if (loadedItems) {
@@ -2787,7 +2640,7 @@ async function loadReplays(force = false) {
     els.replaysGrid.innerHTML = `
       <div class="state-box">
         <h3>Gagal memuat daftar Replay</h3>
-        <p>Tidak dapat terhubung ke server replay atau JKT48Connect. Periksa koneksi internet atau masukkan API Key di Pengaturan.</p>
+        <p>${escapeHtml(loadError || 'Tidak dapat terhubung ke server replay.')}</p>
         <button class="btn-action" style="margin-top:12px" onclick="loadReplays(true)">🔄 Coba Muat Ulang</button>
       </div>
     `;
@@ -2941,46 +2794,7 @@ async function loadNowLive(force = false) {
       return;
     }
   } catch (err) {
-    console.warn('Server /api/now-live gagal, mencoba fallback direct:', err);
-  }
-
-  // Direct client fallback ke JKT48Connect
-  try {
-    const raw = await fetchJkcDirect('/api/now_live', { group: 'jkt48' });
-    const list = Array.isArray(raw) ? raw : raw?.data || [];
-    state.nowLive = list.map(item => {
-      const isIdn =
-        item.type === 'idn' ||
-        (item.streaming_url_list?.[0]?.url || '').includes('live-video.net') ||
-        (item.img || '').includes('idn.app') ||
-        Boolean(item.chat_room_id);
-      const streamUrls = (item.streaming_url_list || []).map(s => ({
-        label: s.label || `${s.quality || 720}p`,
-        quality: s.quality || 720,
-        url: s.url
-      }));
-      return {
-        id: `${isIdn ? 'idn' : 'sr'}_${item.room_id || item.url_key}_${item.slug || ''}`,
-        name: item.name || item.url_key || 'Member JKT48',
-        urlKey: item.url_key || '',
-        slug: item.slug || '',
-        roomId: item.room_id,
-        dataId: item.data_id || item.notification_data_id || '',
-        chatRoomId: item.chat_room_id || '',
-        platform: isIdn ? 'IDN' : 'SHOWROOM',
-        img: normalizeMediaUrlClient(item.img || item.img_alt || ''),
-        avatar: normalizeMediaUrlClient(item.img_alt || item.img || ''),
-        startedAt: item.started_at,
-        streamUrls,
-        bestStreamUrl: streamUrls[0]?.url || '',
-        isRecording: false
-      };
-    });
-    els.liveCountBadge.textContent = state.nowLive.length;
-    renderLiveMiniBanner();
-    renderLiveGrid();
-  } catch (directErr) {
-    if (state.authenticated) console.warn('Direct now_live fallback gagal:', directErr);
+    console.warn('Server /api/now-live gagal:', err);
   }
 }
 
@@ -3258,22 +3072,10 @@ function renderRecordingsList() {
       json = JSON.parse(text);
     } catch {}
     if (json && json.ok && json.authenticated && json.user?.username) {
-      if (json.apiKey) {
-        state.apiKey = json.apiKey;
-        try {
-          localStorage.setItem(JKC_STORAGE_KEY, json.apiKey);
-        } catch {}
-      }
       await onAuthenticated(json.user.username);
       return;
     }
   } catch {}
-
-  // If on localhost / local LAN, immediately authenticate
-  if (isLocalhostEnv()) {
-    await onAuthenticated('escha');
-    return;
-  }
 
   showLoginGate();
 })();

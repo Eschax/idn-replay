@@ -327,6 +327,36 @@ function normalizeMediaUrl(url) {
   return String(url).replace('https://api.jkt48connect.app:8443/', 'https://api.jkt48connect.app/');
 }
 
+function normalizePlaybackUrl(url) {
+  const normalized = normalizeMediaUrl(url);
+  if (!normalized) return '';
+  try {
+    const parsedUrl = new URL(normalized);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return '';
+    const host = parsedUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host === '::1' ||
+      host === '::' ||
+      host === '0.0.0.0' ||
+      host.startsWith('127.')
+    ) {
+      return '';
+    }
+  } catch {
+    return '';
+  }
+  return normalized;
+}
+
+function resolveReplayPlayerUrl(url, dataId, run) {
+  const normalized = normalizePlaybackUrl(url);
+  if (normalized) return normalized;
+  if (!dataId || run == null || String(run).trim() === '') return '';
+  return `${JKT48CONNECT_BASE}/replay/${encodeURIComponent(dataId)}/${encodeURIComponent(run)}`;
+}
+
 // ============================================================================
 // 2. JKT48CONNECT API CLIENT (HEADER-ONLY KEY + CACHE TO SAVE QUOTA)
 // ============================================================================
@@ -526,9 +556,8 @@ function formatRecentItem(item) {
   const points = item.points || item.total_gifts || 0;
   const pointUnit = item.point_unit || (isIdn ? 'idn_gold' : 'showroom_points');
 
-  const streamUrl = normalizeMediaUrl(
-    item.playback?.stream_url || item.recording?.stream_url || ''
-  );
+  const streamUrl =
+    normalizePlaybackUrl(item.playback?.stream_url) || normalizePlaybackUrl(item.recording?.stream_url);
   const ytVideos = item.youtube_replay?.videos || [];
   const playbackStatus = item.playback?.status || (streamUrl ? 'ready' : 'pending');
   const parts = item.playback?.parts ?? (streamUrl ? 1 : 0);
@@ -615,6 +644,7 @@ async function getJkcReplays({ page = 1, perpage = 24, platform = 'ALL', member 
   return {
     ok: res.ok,
     status: res.status,
+    error: res.ok ? '' : res.body?.message || 'Gagal mengambil daftar replay dari JKT48Connect.',
     quota: res.quota,
     page: Number(page),
     totalCount: res.body?.total_count || items.length,
@@ -699,7 +729,7 @@ async function getJkcReplayDetail(dataId, force = false) {
         base.youtubeUrl = `https://www.youtube.com/watch?v=${matched.youtubeId}`;
       }
       if (matched.mp4Url) {
-        base.presetMp4Url = matched.mp4Url;
+        base.presetMp4Url = normalizePlaybackUrl(matched.mp4Url);
       }
     }
   } catch {}
@@ -707,23 +737,22 @@ async function getJkcReplayDetail(dataId, force = false) {
   const recordings = (d.recordings || []).map((r, idx) => ({
     part: idx + 1,
     run: r.run,
-    mp4Url: normalizeMediaUrl(r.url),
+    mp4Url: normalizePlaybackUrl(r.url),
     presetMp4Url: idx === 0 ? base.presetMp4Url || null : null,
-    streamUrl: normalizeMediaUrl(r.stream_url),
-    playerUrl: normalizeMediaUrl(r.player_url),
+    streamUrl: normalizePlaybackUrl(r.stream_url),
+    playerUrl: resolveReplayPlayerUrl(r.player_url, base.dataId, r.run),
     durationSeconds: r.duration_ms ? Math.round(r.duration_ms / 1000) : 0,
     sizeBytes: r.bytes || 0,
     startedAt: r.started_at,
     partial: r.partial
   }));
 
-  const combinedStreamUrl = normalizeMediaUrl(
-    d.playback?.stream_url ||
-      d.recording_session?.stream_url ||
-      d.recording?.stream_url ||
-      recordings[0]?.streamUrl ||
-      ''
-  );
+  const combinedStreamUrl =
+    normalizePlaybackUrl(d.playback?.stream_url) ||
+    normalizePlaybackUrl(d.recording_session?.stream_url) ||
+    normalizePlaybackUrl(d.recording?.stream_url) ||
+    recordings[0]?.streamUrl ||
+    '';
 
   let giftItems = [];
   if (Array.isArray(d.live_info?.gift?.list) && d.live_info.gift.list.length > 0) {
@@ -1546,7 +1575,6 @@ async function handleRequest(req, res) {
             ok: true,
             authenticated: true,
             user: { username: 'escha' },
-            apiKey: getApiKey(),
             autoLocal: true
           },
           { 'Set-Cookie': cookieVal }
@@ -1555,8 +1583,7 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, {
         ok: true,
         authenticated: Boolean(session),
-        user: session ? { username: session.username } : null,
-        apiKey: session ? getApiKey() : ''
+        user: session ? { username: session.username } : null
       });
     }
 
@@ -1587,7 +1614,7 @@ async function handleRequest(req, res) {
       return sendJson(
         res,
         200,
-        { ok: true, user: { username: matchedUser }, apiKey: getApiKey() },
+        { ok: true, user: { username: matchedUser } },
         { 'Set-Cookie': cookieVal }
       );
     }
@@ -2121,6 +2148,8 @@ if (!IS_SERVERLESS && require.main === module) {
 handleRequest.formatRecentItem = formatRecentItem;
 handleRequest.isValidRecId = isValidRecId;
 handleRequest.isAllowedStreamUrl = isAllowedStreamUrl;
+handleRequest.normalizePlaybackUrl = normalizePlaybackUrl;
+handleRequest.resolveReplayPlayerUrl = resolveReplayPlayerUrl;
 handleRequest.verifyCredentials = verifyCredentials;
 handleRequest.createSessionToken = createSessionToken;
 handleRequest.runCloudLiveNotifyCheck = runCloudLiveNotifyCheck;
