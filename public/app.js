@@ -50,7 +50,7 @@ const state = {
   currentPlayingReplay: null,
   currentPartIdx: 0,
   currentPartBaseOffsetSec: 0,
-  playerEngine: 'cinema',
+  playerEngine: 'hls',
   mediaSourceAbort: null,
   mediaSourceObjectUrl: null,
 
@@ -1529,32 +1529,30 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
     state.hlsInstance = null;
   }
   if (!url) return;
-  setVideoLoading('Memuat stream cepat...');
-  if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+  setVideoLoading('Memuat stream...');
+  // Don't hide overlay yet — keep it visible. Hide only when video actually plays.
 
-  const onReady = () => {
+  const onPlaying = () => {
     setVideoLoading('');
     if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
   };
-  els.hlsPlayer.onloadedmetadata = onReady;
-  els.hlsPlayer.oncanplay = onReady;
-  els.hlsPlayer.onplaying = onReady;
+  els.hlsPlayer.onplaying = onPlaying;
+  // Also clear loading badge when metadata arrives
+  els.hlsPlayer.onloadedmetadata = () => setVideoLoading('');
+  els.hlsPlayer.oncanplay = () => setVideoLoading('');
 
   const isMp4 = url.includes('.mp4') && !url.includes('.m3u8');
   if (isMp4) {
     els.hlsPlayer.onerror = () => {
       els.hlsPlayer.onerror = null;
+      setVideoLoading('');
       if (onFatalError) onFatalError(new Error('native_mp4_failed'));
     };
     els.hlsPlayer.src = url;
-    const p = els.hlsPlayer.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch(err => {
-        console.warn('Autoplay terhalang kebijakan browser:', err);
-        setVideoLoading('');
-        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
-      });
-    }
+    // Show overlay immediately — let user tap to play (safe for mobile autoplay policy)
+    if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+    // Try autoplay anyway; if it works overlay will auto-hide via onplaying
+    els.hlsPlayer.play().catch(() => {});
     return;
   }
 
@@ -1572,15 +1570,11 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
     state.hlsInstance = hls;
     hls.loadSource(url);
     hls.attachMedia(els.hlsPlayer);
+    // Show play overlay immediately while HLS manifest loads — reliable on mobile
+    if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      const p = els.hlsPlayer.play();
-      if (p && typeof p.catch === 'function') {
-        p.catch(err => {
-          console.warn('Autoplay terhalang browser:', err);
-          setVideoLoading('');
-          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
-        });
-      }
+      // Try autoplay; if blocked, overlay is already visible for user to tap
+      els.hlsPlayer.play().catch(() => {});
     });
     let recoveredOnce = false;
     hls.on(Hls.Events.ERROR, (_, data) => {
@@ -1595,18 +1589,15 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
       if (onFatalError) onFatalError(new Error(data.details || 'hls_fatal_error'));
     });
   } else if (els.hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari native HLS
     els.hlsPlayer.onerror = () => {
       els.hlsPlayer.onerror = null;
+      setVideoLoading('');
       if (onFatalError) onFatalError(new Error('safari_hls_failed'));
     };
     els.hlsPlayer.src = url;
-    const p = els.hlsPlayer.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => {
-        setVideoLoading('');
-        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
-      });
-    }
+    if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+    els.hlsPlayer.play().catch(() => {});
   }
 }
 
@@ -1743,7 +1734,26 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
     const startActivePlayback = () => {
       if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
       const p = getActivePlayerAdapter();
-      p.play();
+      if (p.type === 'video') {
+        // If video not ready yet, wait for canplay before calling play()
+        const vid = els.hlsPlayer;
+        if (vid.readyState < 2) {
+          // Not ready — wait for canplay
+          const onReady = () => {
+            vid.removeEventListener('canplay', onReady);
+            vid.play().catch(() => {
+              if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+            });
+          };
+          vid.addEventListener('canplay', onReady);
+        } else {
+          vid.play().catch(() => {
+            if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+          });
+        }
+      } else {
+        p.play();
+      }
       if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
     };
     if (els.bigPlayBtn) els.bigPlayBtn.onclick = startActivePlayback;
