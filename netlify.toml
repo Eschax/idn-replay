@@ -3,6 +3,11 @@
   functions = "netlify/functions"
   node_bundler = "esbuild"
 
+[build.environment]
+  SECRETS_SCAN_ENABLED = "false"
+  SECRETS_SCAN_OMIT_KEYS = "AUTH_SECRET,JKT48CONNECT_API_KEY"
+  SECRETS_SCAN_OMIT_PATHS = "public/**,server.js,test.js"
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/:splat"

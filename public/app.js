@@ -5,13 +5,7 @@
 const CHAT_WINDOW_SIZE = 180;
 const JKC_STORAGE_KEY = 'jkc_client_api_key';
 const JKT48CONNECT_CLIENT_BASE = 'https://api.jkt48connect.app';
-const JKC_DEFAULT_FALLBACK = (function () {
-  try {
-    return atob('amtjXzgyYTg0ZWZlYmY0YjY3YjczZmEwYzIwYjcwOTZlYThkZTFlMzM2Yzg=');
-  } catch {
-    return '';
-  }
-})();
+const JKC_DEFAULT_FALLBACK = '';
 
 const state = {
   authenticated: false,
