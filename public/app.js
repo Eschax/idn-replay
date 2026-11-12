@@ -1680,6 +1680,15 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
     if (els.toolbarTheaterBtn) els.toolbarTheaterBtn.onclick = toggleTheater;
 
     // ── Switch Player Engine Ala jkt48.preset.id ──
+    const getOfficialUrl = (idx = state.currentPartIdx || 0) => {
+      const chosen = recs[idx] || recs[0];
+      return (
+        chosen?.playerUrl ||
+        (chosen?.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${chosen.run}` : '') ||
+        (d.dataId ? `https://api.jkt48connect.app/replay/${d.dataId}/1` : '')
+      );
+    };
+
     const updateSwitchEngineLabel = () => {
       let lbl = 'Switch Player';
       if (state.playerEngine === 'youtube') lbl = 'Player: YouTube Full';
@@ -1687,27 +1696,94 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       else if (state.playerEngine === 'hls') lbl = 'Player: HLS.js';
       else if (state.playerEngine === 'official') lbl = 'Player: Web Resmi';
       if (els.playerPrefLabel) els.playerPrefLabel.textContent = lbl;
-      if (els.switchPlayerEngineBtn) els.switchPlayerEngineBtn.textContent = '🔄 ' + lbl;
+      if (els.switchPlayerEngineBtn) {
+        els.switchPlayerEngineBtn.textContent = '🔄 ' + lbl;
+        els.switchPlayerEngineBtn.classList.remove('hidden');
+      }
+    };
+
+    const triggerPlaybackFallback = (reason = '') => {
+      console.warn('Playback fallback triggered:', reason);
+      const curIdx = state.currentPartIdx || 0;
+      const curRec = recs[curIdx] || recs[0];
+      const partM3u8 = curRec?.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
+      const officialUrl = getOfficialUrl(curIdx);
+
+      if (state.playerEngine === 'mp4') {
+        state.mp4ServerDown = true;
+        if (partM3u8) {
+          showToast('MP4 503/Error. Beralih ke stream HLS...');
+          state.playerEngine = 'hls';
+          updateSwitchEngineLabel();
+          playPart(curIdx);
+        } else if (d.youtubeId) {
+          showToast('MP4 503/Error. Beralih ke arsip YouTube...');
+          state.playerEngine = 'youtube';
+          updateSwitchEngineLabel();
+          playPart(curIdx);
+        } else if (officialUrl) {
+          showToast('MP4 503/Error. Beralih ke Player Resmi JKT48Connect...');
+          state.playerEngine = 'official';
+          updateSwitchEngineLabel();
+          playPart(curIdx);
+        } else {
+          showToast('Stream MP4 503 dan tidak ada player alternatif.');
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+        }
+      } else if (state.playerEngine === 'hls') {
+        if (d.youtubeId) {
+          showToast('HLS error. Beralih ke arsip YouTube...');
+          state.playerEngine = 'youtube';
+          updateSwitchEngineLabel();
+          playPart(curIdx);
+        } else if (officialUrl) {
+          showToast('HLS error. Beralih ke Player Resmi JKT48Connect...');
+          state.playerEngine = 'official';
+          updateSwitchEngineLabel();
+          playPart(curIdx);
+        } else {
+          showToast('Gagal memuat stream HLS.');
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+        }
+      } else if (state.playerEngine === 'youtube') {
+        if (officialUrl) {
+          showToast('YouTube tidak tersedia. Beralih ke Player Resmi JKT48Connect...');
+          state.playerEngine = 'official';
+          updateSwitchEngineLabel();
+          playPart(curIdx);
+        } else {
+          showToast('Arsip YouTube tidak tersedia.');
+        }
+      } else {
+        if (officialUrl && state.playerEngine !== 'official') {
+          fallbackToOfficial();
+        } else {
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+        }
+      }
     };
 
     const cyclePlayerEngine = () => {
+      const curIdx = state.currentPartIdx || 0;
+      const curRec = recs[curIdx] || recs[0];
+      const officialUrl = getOfficialUrl(curIdx);
       const available = [];
-      if (recs[state.currentPartIdx]?.mp4Url || recs[0]?.mp4Url) available.push('mp4');
-      if (recs[state.currentPartIdx]?.streamUrl || d.combinedStreamUrl) available.push('hls');
+      if (curRec?.mp4Url || recs[0]?.mp4Url) available.push('mp4');
+      if (curRec?.streamUrl || d.combinedStreamUrl) available.push('hls');
       if (d.youtubeId) available.push('youtube');
-      if (playerUrl) available.push('official');
+      if (officialUrl) available.push('official');
 
       if (available.length <= 1) {
         showToast('Hanya 1 engine yang tersedia untuk sesi ini.');
         return;
       }
 
-      const curIdx = available.indexOf(state.playerEngine);
-      const nextIdx = (curIdx + 1) % available.length;
+      const curPos = available.indexOf(state.playerEngine);
+      const nextIdx = (curPos + 1) % available.length;
       state.playerEngine = available[nextIdx];
       updateSwitchEngineLabel();
       showToast(`Beralih ke: ${els.playerPrefLabel ? els.playerPrefLabel.textContent : state.playerEngine}`);
-      playPart(state.currentPartIdx);
+      playPart(curIdx);
     };
 
     if (els.playerPrefBtn) els.playerPrefBtn.onclick = cyclePlayerEngine;
@@ -1735,20 +1811,39 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
       const p = getActivePlayerAdapter();
       if (p.type === 'video') {
-        // If video not ready yet, wait for canplay before calling play()
         const vid = els.hlsPlayer;
+        if (vid.error) {
+          triggerPlaybackFallback('video_element_error');
+          return;
+        }
         if (vid.readyState < 2) {
-          // Not ready — wait for canplay
+          let timeoutId = setTimeout(() => {
+            if (vid.readyState < 2 && !vid.error) {
+              triggerPlaybackFallback('buffer_timeout_503');
+            }
+          }, 3500);
+
           const onReady = () => {
+            clearTimeout(timeoutId);
             vid.removeEventListener('canplay', onReady);
+            vid.removeEventListener('error', onError);
             vid.play().catch(() => {
-              if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+              triggerPlaybackFallback('play_rejected');
             });
           };
-          vid.addEventListener('canplay', onReady);
+
+          const onError = () => {
+            clearTimeout(timeoutId);
+            vid.removeEventListener('canplay', onReady);
+            vid.removeEventListener('error', onError);
+            triggerPlaybackFallback('media_error');
+          };
+
+          vid.addEventListener('canplay', onReady, { once: true });
+          vid.addEventListener('error', onError, { once: true });
         } else {
           vid.play().catch(() => {
-            if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+            triggerPlaybackFallback('play_rejected');
           });
         }
       } else {
@@ -1829,20 +1924,26 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         state.currentPartBaseOffsetSec = 0;
       }
 
+      const officialUrl = getOfficialUrl(idx);
+
       if (!chosen) {
         if (d.youtubeId) {
           setVideoLoading('');
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
           els.hlsPlayer.classList.add('hidden');
           els.ytPlayer.classList.remove('hidden');
           els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&rel=0`;
+        } else if (officialUrl) {
+          setVideoLoading('');
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+          els.hlsPlayer.classList.add('hidden');
+          els.ytPlayer.classList.remove('hidden');
+          els.ytPlayer.src = officialUrl;
         } else {
           showToast('Video replay sesi ini masih sedang diproses oleh server R2 JKT48Connect.');
         }
         return;
       }
-
-      const playerUrl =
-        chosen.playerUrl || (chosen.run ? `https://api.jkt48connect.app/replay/${d.dataId}/${chosen.run}` : '');
 
       if (state.mediaSourceAbort) {
         state.mediaSourceAbort.abort();
@@ -1874,13 +1975,15 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       };
 
       const fallbackToOfficial = () => {
-        if (playerUrl) {
+        if (officialUrl) {
           setVideoLoading('');
           state.playerEngine = 'official';
           updateSwitchEngineLabel();
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
           els.hlsPlayer.classList.add('hidden');
           els.ytPlayer.classList.remove('hidden');
-          els.ytPlayer.src = playerUrl;
+          els.ytPlayer.src = officialUrl;
+          showToast('Beralih ke Pemutar Web Resmi JKT48Connect');
         } else {
           setVideoLoading('');
           showToast('Tidak ada stream video yang tersedia untuk sesi ini.');
@@ -1890,16 +1993,22 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       // Engine 1: YouTube Full Archive (Official YouTube Embed)
       if (state.playerEngine === 'youtube' && d.youtubeId) {
         state.ytPlayerPaused = false;
+        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+        setVideoLoading('');
         if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
+        els.hlsPlayer.classList.add('hidden');
         els.ytPlayer.classList.remove('hidden');
         els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&enablejsapi=1&rel=0`;
         return;
       }
 
       // Engine 2: Official Web Player (iframe)
-      if (state.playerEngine === 'official' && playerUrl) {
+      if (state.playerEngine === 'official' && officialUrl) {
+        setVideoLoading('');
+        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+        els.hlsPlayer.classList.add('hidden');
         els.ytPlayer.classList.remove('hidden');
-        els.ytPlayer.src = playerUrl;
+        els.ytPlayer.src = officialUrl;
         return;
       }
 
@@ -1907,62 +2016,47 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       if (state.playerEngine === 'mp4' && rawMp4) {
         els.hlsPlayer.classList.remove('hidden');
         attachHlsOrMp4ToVideo(rawMp4, {
-          onFatalError: () => {
-            console.warn('MP4 playback fatal error, falling back to HLS / YouTube...');
-            if (partM3u8) {
-              state.playerEngine = 'hls';
-              updateSwitchEngineLabel();
-              playPart(idx);
-            } else if (d.youtubeId) {
-              state.playerEngine = 'youtube';
-              updateSwitchEngineLabel();
-              playPart(idx);
-            } else if (playerUrl) {
-              state.playerEngine = 'official';
-              updateSwitchEngineLabel();
-              playPart(idx);
-            }
+          onFatalError: (err) => {
+            console.warn('MP4 playback fatal error, falling back...', err);
+            triggerPlaybackFallback('mp4_fatal_error');
           }
         });
         return;
       }
 
       // Engine 4: HLS.js Stream (Adaptive bitrate)
-      if (partM3u8) {
+      if (state.playerEngine === 'hls' && partM3u8) {
         els.hlsPlayer.classList.remove('hidden');
         attachHlsOrMp4ToVideo(partM3u8, {
-          onFatalError: () => {
-            console.warn('HLS stream fatal error, falling back to YouTube / Official...');
-            if (d.youtubeId) {
-              state.playerEngine = 'youtube';
-              updateSwitchEngineLabel();
-              playPart(idx);
-            } else if (playerUrl) {
-              state.playerEngine = 'official';
-              updateSwitchEngineLabel();
-              playPart(idx);
-            }
+          onFatalError: (err) => {
+            console.warn('HLS stream fatal error, falling back...', err);
+            triggerPlaybackFallback('hls_fatal_error');
           }
         });
         return;
       }
 
-      // Fallback
-      if (d.youtubeId) {
-        state.playerEngine = 'youtube';
-        updateSwitchEngineLabel();
-        playPart(idx);
-        return;
-      }
-
-      fallbackToOfficial();
+      // If active engine is not available for this part, trigger fallback
+      triggerPlaybackFallback('engine_unsupported_for_recording');
     }
 
     // Engine Selection Heuristic: Prefer native MP4 direct first, or YouTube Full if partial
     const isPartialRecording = recs.some(r => r.partial) ||
       (d.durationSeconds > 1200 && recs[0]?.durationSeconds > 0 && recs[0].durationSeconds < 1200);
 
-    if (recs[0]?.mp4Url) {
+    const officialUrl0 = getOfficialUrl(0);
+
+    if (state.mp4ServerDown) {
+      if (d.youtubeId) {
+        state.playerEngine = 'youtube';
+      } else if (recs[0]?.streamUrl || d.combinedStreamUrl) {
+        state.playerEngine = 'hls';
+      } else if (officialUrl0) {
+        state.playerEngine = 'official';
+      } else {
+        state.playerEngine = 'mp4';
+      }
+    } else if (recs[0]?.mp4Url) {
       state.playerEngine = 'mp4';
     } else if (d.youtubeId && (isPartialRecording || recs.length === 0)) {
       state.playerEngine = 'youtube';
