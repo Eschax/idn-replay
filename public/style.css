@@ -1075,14 +1075,16 @@ body.theater .chat-section-dock {
 .video-play-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.65);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
-  backdrop-filter: blur(2px);
+  z-index: 25;
+  backdrop-filter: blur(3px);
   cursor: pointer;
-  transition: opacity 0.2s;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: opacity 0.2s ease;
 }
 
 .btn-big-play {
@@ -1954,25 +1956,27 @@ body.theater .chat-section-dock {
   color: #7dd3fc;
 }
 
-/* ==================== VIDSTACK & UNIFIED PLAYER CONTROLS (ALA JKT48.PRESET.ID) ==================== */
-media-player {
-  --media-brand: #e11d48;
-  --media-focus-ring: #e11d48;
-  width: 100%;
-  height: 100%;
-  aspect-ratio: 16 / 9;
+/* ==================== UNIFIED PLAYER CONTROLS & GESTURES (ALA JKT48.PRESET.ID) ==================== */
+.video-wrapper:fullscreen,
+.video-wrapper:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
   background: #000;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-#vidstackHost {
+.video-wrapper:fullscreen .video-frame,
+.video-wrapper:-webkit-full-screen .video-frame {
   width: 100%;
   height: 100%;
-  display: block;
+  max-height: 100vh;
+  object-fit: contain;
 }
 
-/* Double-tap / Click Skip Overlays */
+/* Double-tap Quick-Skip Visual Ripple Overlays (Pointer-events: none so native touches never get blocked) */
 .skip-tap-side {
   position: absolute;
   top: 0;
@@ -1982,8 +1986,7 @@ media-player {
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: auto;
-  cursor: pointer;
+  pointer-events: none;
   opacity: 0;
   transition: opacity 0.2s ease, background 0.2s ease;
 }
@@ -1996,27 +1999,28 @@ media-player {
   right: 0;
 }
 
-.skip-tap-side:active,
 .skip-tap-side.animating {
   opacity: 1;
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.4);
 }
 
 .skip-tap-badge {
-  background: rgba(0, 0, 0, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.3);
   color: #fff;
-  padding: 8px 16px;
+  padding: 8px 18px;
   border-radius: 99px;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   pointer-events: none;
-  transform: scale(0.9);
+  transform: scale(0.85);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   transition: transform 0.15s ease;
 }
 
 .skip-tap-side.animating .skip-tap-badge {
-  transform: scale(1.1);
+  transform: scale(1.12);
 }
 
 /* Unified Custom Control Bar */

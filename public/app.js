@@ -157,8 +157,8 @@ const els = {
   dockPanelScreenshot: document.getElementById('dockPanelScreenshot'),
   chatSearchInput: document.getElementById('chatSearchInput'),
 
-  // Unified Controls & Vidstack (Ala jkt48.preset.id)
-  vidstackHost: document.getElementById('vidstackHost'),
+  // Unified Controls & Video Hosts (Ala jkt48.preset.id)
+  videoWrapper: document.getElementById('videoWrapper'),
   skipOverlayLeft: document.getElementById('skipOverlayLeft'),
   skipOverlayRight: document.getElementById('skipOverlayRight'),
   playerCustomControls: document.getElementById('playerCustomControls'),
@@ -1086,22 +1086,6 @@ let currentPlaybackSpeed = 1.0;
 const PLAYBACK_SPEEDS = [0.75, 1.0, 1.25, 1.5, 2.0];
 
 function getActivePlayerAdapter() {
-  if (els.vidstackHost && !els.vidstackHost.classList.contains('hidden')) {
-    const vp = els.vidstackHost.querySelector('media-player');
-    if (vp) {
-      return {
-        type: 'vidstack',
-        el: vp,
-        getCurrentTime: () => Number(vp.currentTime) || 0,
-        getDuration: () => Number(vp.duration) || 0,
-        seekTo: sec => { vp.currentTime = Math.max(0, sec); },
-        play: () => vp.play().catch(() => {}),
-        pause: () => vp.pause(),
-        paused: () => Boolean(vp.paused),
-        setSpeed: r => { vp.playbackRate = r; }
-      };
-    }
-  }
   if (els.ytPlayer && !els.ytPlayer.classList.contains('hidden')) {
     return {
       type: 'youtube',
@@ -1118,6 +1102,8 @@ function getActivePlayerAdapter() {
         } catch {}
       },
       play: () => {
+        state.ytPlayerPaused = false;
+        if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
         try {
           els.ytPlayer.contentWindow.postMessage(
             JSON.stringify({ event: 'command', func: 'playVideo', args: [] }),
@@ -1126,6 +1112,8 @@ function getActivePlayerAdapter() {
         } catch {}
       },
       pause: () => {
+        state.ytPlayerPaused = true;
+        if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
         try {
           els.ytPlayer.contentWindow.postMessage(
             JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }),
@@ -1133,7 +1121,7 @@ function getActivePlayerAdapter() {
           );
         } catch {}
       },
-      paused: () => false,
+      paused: () => Boolean(state.ytPlayerPaused),
       setSpeed: r => {
         try {
           els.ytPlayer.contentWindow.postMessage(
@@ -1150,7 +1138,16 @@ function getActivePlayerAdapter() {
     getCurrentTime: () => Number(els.hlsPlayer.currentTime) || 0,
     getDuration: () => Number(els.hlsPlayer.duration) || 0,
     seekTo: sec => { els.hlsPlayer.currentTime = Math.max(0, sec); },
-    play: () => els.hlsPlayer.play().catch(() => {}),
+    play: () => {
+      const p = els.hlsPlayer.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(e => {
+          console.warn('Playback blocked by browser policy:', e);
+          if (els.videoPlayOverlay) els.videoPlayOverlay.classList.remove('hidden');
+        });
+      }
+      return p;
+    },
     pause: () => els.hlsPlayer.pause(),
     paused: () => Boolean(els.hlsPlayer.paused),
     setSpeed: r => { els.hlsPlayer.playbackRate = r; }
@@ -1209,13 +1206,36 @@ function cyclePlayerSpeed() {
 }
 
 function togglePlayerFullscreen() {
-  const container = els.videoWrapper;
+  const container = els.videoWrapper || document.getElementById('videoWrapper');
+  const video = els.hlsPlayer;
   if (!container) return;
-  if (!document.fullscreenElement) {
-    if (container.requestFullscreen) container.requestFullscreen();
-    else if (container.webkitRequestFullscreen) container.webkitRequestFullscreen();
+
+  const isFs = Boolean(
+    document.fullscreenElement ||
+    document.webkitFullscreenElement ||
+    document.mozFullScreenElement ||
+    document.msFullscreenElement ||
+    (video && video.webkitDisplayingFullscreen)
+  );
+
+  if (isFs) {
+    if (document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    } else if (video && video.webkitExitFullscreen) {
+      video.webkitExitFullscreen();
+    }
   } else {
-    if (document.exitFullscreen) document.exitFullscreen();
+    if (container.requestFullscreen) {
+      container.requestFullscreen().catch(() => {
+        if (video && video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+      });
+    } else if (container.webkitRequestFullscreen) {
+      container.webkitRequestFullscreen();
+    } else if (video && video.webkitEnterFullscreen) {
+      video.webkitEnterFullscreen();
+    }
   }
 }
 
@@ -1223,49 +1243,9 @@ function triggerSkipFeedback(side, delta) {
   const overlay = side === 'left' ? els.skipOverlayLeft : els.skipOverlayRight;
   if (overlay) {
     overlay.classList.add('animating');
-    setTimeout(() => overlay.classList.remove('animating'), 350);
+    setTimeout(() => overlay.classList.remove('animating'), 500);
   }
   playerSkip(delta);
-}
-
-function ensureVidstackPlayer(src, title) {
-  if (!els.vidstackHost) return null;
-  els.vidstackHost.innerHTML = `
-    <media-player
-      class="replay-media-player"
-      title="${escapeHtml(title || 'JKT48 Replay')}"
-      src="${src}"
-      view-type="video"
-      stream-type="on-demand"
-      load="eager"
-      playsinline
-    >
-      <media-provider></media-provider>
-      <media-video-layout></media-video-layout>
-    </media-player>
-  `;
-  const vp = els.vidstackHost.querySelector('media-player');
-  if (vp) {
-    vp.addEventListener('time-update', () => {
-      const cur = vp.currentTime || 0;
-      const dur = vp.duration || 0;
-      updateControlsTime(cur, dur);
-      syncChatToVideoTime(false);
-    });
-    vp.addEventListener('play', () => {
-      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
-    });
-    vp.addEventListener('pause', () => {
-      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
-    });
-    vp.addEventListener('ended', () => {
-      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '▶';
-      if (state.currentPartIdx + 1 < (state.currentPlayingReplay?.recordings?.length || 0)) {
-        playPart(state.currentPartIdx + 1);
-      }
-    });
-  }
-  return vp;
 }
 
 // Wire persistent controls events once
@@ -1276,30 +1256,80 @@ function ensureVidstackPlayer(src, title) {
   if (els.btnCtrlSpeed) els.btnCtrlSpeed.onclick = cyclePlayerSpeed;
   if (els.btnCtrlFullscreen) els.btnCtrlFullscreen.onclick = togglePlayerFullscreen;
 
-  if (els.skipOverlayLeft) {
-    let lastTap = 0;
-    els.skipOverlayLeft.onclick = () => {
+  // Unified Gesture Handler on videoWrapper (single tap = play/pause, double tap = seek/fullscreen)
+  if (els.videoWrapper) {
+    let tapTimer = null;
+    let lastTapTime = 0;
+
+    const handleTapAction = (clientX, clientY) => {
+      const rect = els.videoWrapper.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+
+      const xRatio = (clientX - rect.left) / rect.width;
       const now = Date.now();
-      if (now - lastTap < 350) {
-        triggerSkipFeedback('left', -10);
-        lastTap = 0;
+      const timeSinceLast = now - lastTapTime;
+
+      if (timeSinceLast < 320) {
+        // Double Tap detected
+        clearTimeout(tapTimer);
+        tapTimer = null;
+        lastTapTime = 0;
+
+        if (xRatio < 0.32) {
+          triggerSkipFeedback('left', -10);
+        } else if (xRatio > 0.68) {
+          triggerSkipFeedback('right', 10);
+        } else {
+          // Double Tap on Center: Toggle Fullscreen!
+          togglePlayerFullscreen();
+        }
       } else {
-        lastTap = now;
+        lastTapTime = now;
+        clearTimeout(tapTimer);
+        tapTimer = setTimeout(() => {
+          tapTimer = null;
+          lastTapTime = 0;
+          // Single Tap: Toggle Play / Pause
+          playerPlayPause();
+        }, 260);
       }
     };
+
+    els.videoWrapper.addEventListener('pointerup', e => {
+      // Don't intercept if user tapped on controls, buttons, or inputs
+      if (e.target.closest('#videoPlayOverlay') || e.target.closest('button') || e.target.closest('input')) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      handleTapAction(e.clientX, e.clientY);
+    });
+
+    els.videoWrapper.addEventListener('dblclick', e => {
+      if (e.target.closest('#videoPlayOverlay') || e.target.closest('button') || e.target.closest('input')) return;
+      const rect = els.videoWrapper.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
+      const xRatio = (e.clientX - rect.left) / rect.width;
+      if (xRatio >= 0.32 && xRatio <= 0.68) {
+        togglePlayerFullscreen();
+      }
+    });
   }
 
-  if (els.skipOverlayRight) {
-    let lastTap = 0;
-    els.skipOverlayRight.onclick = () => {
-      const now = Date.now();
-      if (now - lastTap < 350) {
-        triggerSkipFeedback('right', 10);
-        lastTap = 0;
-      } else {
-        lastTap = now;
-      }
-    };
+  // Update fullscreen button icon on fullscreen change
+  const updateFsBtn = () => {
+    const isFs = Boolean(
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      (els.hlsPlayer && els.hlsPlayer.webkitDisplayingFullscreen)
+    );
+    if (els.btnCtrlFullscreen) {
+      els.btnCtrlFullscreen.textContent = isFs ? '🗗' : '⛶';
+      els.btnCtrlFullscreen.title = isFs ? 'Keluar Layar Penuh (Esc / F)' : 'Layar Penuh (F)';
+    }
+  };
+  document.addEventListener('fullscreenchange', updateFsBtn);
+  document.addEventListener('webkitfullscreenchange', updateFsBtn);
+  if (els.hlsPlayer) {
+    els.hlsPlayer.addEventListener('webkitbeginfullscreen', updateFsBtn);
+    els.hlsPlayer.addEventListener('webkitendfullscreen', updateFsBtn);
   }
 
   if (els.ctrlSeekSlider) {
@@ -1571,6 +1601,10 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
       if (onFatalError) onFatalError(new Error(data.details || 'hls_fatal_error'));
     });
   } else if (els.hlsPlayer.canPlayType('application/vnd.apple.mpegurl')) {
+    els.hlsPlayer.onerror = () => {
+      els.hlsPlayer.onerror = null;
+      if (onFatalError) onFatalError(new Error('safari_hls_failed'));
+    };
     els.hlsPlayer.src = url;
     const p = els.hlsPlayer.play();
     if (p && typeof p.catch === 'function') {
@@ -1672,15 +1706,20 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
     };
 
     const cyclePlayerEngine = () => {
-      if (state.playerEngine === 'youtube') {
-        state.playerEngine = 'mp4';
-      } else if (state.playerEngine === 'mp4') {
-        state.playerEngine = 'hls';
-      } else if (state.playerEngine === 'hls') {
-        state.playerEngine = 'official';
-      } else {
-        state.playerEngine = d.youtubeId ? 'youtube' : 'mp4';
+      const available = [];
+      if (recs[state.currentPartIdx]?.mp4Url || recs[0]?.mp4Url) available.push('mp4');
+      if (recs[state.currentPartIdx]?.streamUrl || d.combinedStreamUrl) available.push('hls');
+      if (d.youtubeId) available.push('youtube');
+      if (playerUrl) available.push('official');
+
+      if (available.length <= 1) {
+        showToast('Hanya 1 engine yang tersedia untuk sesi ini.');
+        return;
       }
+
+      const curIdx = available.indexOf(state.playerEngine);
+      const nextIdx = (curIdx + 1) % available.length;
+      state.playerEngine = available[nextIdx];
       updateSwitchEngineLabel();
       showToast(`Beralih ke: ${els.playerPrefLabel ? els.playerPrefLabel.textContent : state.playerEngine}`);
       playPart(state.currentPartIdx);
@@ -1707,20 +1746,14 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
     }
 
     // ── Big Play Overlay Button (Handles blocked autoplay smoothly) ──
-    if (els.bigPlayBtn) {
-      els.bigPlayBtn.onclick = () => {
-        if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
-        els.hlsPlayer.play().catch(e => console.warn(e));
-      };
-    }
-    if (els.videoPlayOverlay) {
-      els.videoPlayOverlay.onclick = e => {
-        if (e.target === els.videoPlayOverlay) {
-          els.videoPlayOverlay.classList.add('hidden');
-          els.hlsPlayer.play().catch(e => console.warn(e));
-        }
-      };
-    }
+    const startActivePlayback = () => {
+      if (els.videoPlayOverlay) els.videoPlayOverlay.classList.add('hidden');
+      const p = getActivePlayerAdapter();
+      p.play();
+      if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
+    };
+    if (els.bigPlayBtn) els.bigPlayBtn.onclick = startActivePlayback;
+    if (els.videoPlayOverlay) els.videoPlayOverlay.onclick = startActivePlayback;
 
     els.playerDownloadMp4Btn.classList.remove('hidden');
     els.playerDownloadMp4Btn.onclick = () => openDownloadModal(d);
@@ -1824,10 +1857,6 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       const partM3u8 = chosen?.streamUrl || (recs.length === 1 ? d.combinedStreamUrl : '');
 
       // Reset DOM state of all player hosts
-      if (els.vidstackHost) {
-        els.vidstackHost.innerHTML = '';
-        els.vidstackHost.classList.add('hidden');
-      }
       els.ytPlayer.classList.add('hidden');
       els.ytPlayer.src = 'about:blank';
       els.hlsPlayer.classList.add('hidden');
@@ -1846,21 +1875,20 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
           state.playerEngine = 'official';
           updateSwitchEngineLabel();
           els.hlsPlayer.classList.add('hidden');
-          if (els.vidstackHost) els.vidstackHost.classList.add('hidden');
           els.ytPlayer.classList.remove('hidden');
           els.ytPlayer.src = playerUrl;
+        } else {
+          setVideoLoading('');
+          showToast('Tidak ada stream video yang tersedia untuk sesi ini.');
         }
       };
 
-      // Engine 1: YouTube Full Archive (Vidstack / YouTube Embed)
+      // Engine 1: YouTube Full Archive (Official YouTube Embed)
       if (state.playerEngine === 'youtube' && d.youtubeId) {
-        if (window.customElements && customElements.get('media-player') && els.vidstackHost) {
-          els.vidstackHost.classList.remove('hidden');
-          ensureVidstackPlayer(`youtube/${d.youtubeId}`, d.title);
-        } else {
-          els.ytPlayer.classList.remove('hidden');
-          els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&enablejsapi=1&rel=0`;
-        }
+        state.ytPlayerPaused = false;
+        if (els.btnCtrlPlayPause) els.btnCtrlPlayPause.textContent = '⏸';
+        els.ytPlayer.classList.remove('hidden');
+        els.ytPlayer.src = `https://www.youtube.com/embed/${encodeURIComponent(d.youtubeId)}?autoplay=1&enablejsapi=1&rel=0`;
         return;
       }
 
@@ -1876,8 +1904,13 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         els.hlsPlayer.classList.remove('hidden');
         attachHlsOrMp4ToVideo(rawMp4, {
           onFatalError: () => {
+            console.warn('MP4 playback fatal error, falling back to HLS / YouTube...');
             if (partM3u8) {
               state.playerEngine = 'hls';
+              updateSwitchEngineLabel();
+              playPart(idx);
+            } else if (d.youtubeId) {
+              state.playerEngine = 'youtube';
               updateSwitchEngineLabel();
               playPart(idx);
             } else if (playerUrl) {
@@ -1895,7 +1928,12 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
         els.hlsPlayer.classList.remove('hidden');
         attachHlsOrMp4ToVideo(partM3u8, {
           onFatalError: () => {
-            if (playerUrl) {
+            console.warn('HLS stream fatal error, falling back to YouTube / Official...');
+            if (d.youtubeId) {
+              state.playerEngine = 'youtube';
+              updateSwitchEngineLabel();
+              playPart(idx);
+            } else if (playerUrl) {
               state.playerEngine = 'official';
               updateSwitchEngineLabel();
               playPart(idx);
@@ -1916,18 +1954,20 @@ async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
       fallbackToOfficial();
     }
 
-    // Heuristic: If recording is partial or duration < 20 mins while live was longer, default to YouTube Full
+    // Engine Selection Heuristic: Prefer native MP4 direct first, or YouTube Full if partial
     const isPartialRecording = recs.some(r => r.partial) ||
       (d.durationSeconds > 1200 && recs[0]?.durationSeconds > 0 && recs[0].durationSeconds < 1200);
 
-    if (d.youtubeId && (isPartialRecording || recs.length === 0)) {
-      state.playerEngine = 'youtube';
-    } else if (recs[0]?.mp4Url) {
+    if (recs[0]?.mp4Url) {
       state.playerEngine = 'mp4';
+    } else if (d.youtubeId && (isPartialRecording || recs.length === 0)) {
+      state.playerEngine = 'youtube';
+    } else if (recs[0]?.streamUrl || d.combinedStreamUrl) {
+      state.playerEngine = 'hls';
     } else if (d.youtubeId) {
       state.playerEngine = 'youtube';
     } else {
-      state.playerEngine = 'hls';
+      state.playerEngine = 'official';
     }
     updateSwitchEngineLabel();
 
