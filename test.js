@@ -85,6 +85,8 @@ function extractCookie(setCookieHeader) {
     handleRequest.resolveReplayPlayerUrl('https://cdn.example/replay/123', 'replay-id', '123'),
     'https://cdn.example/replay/123'
   );
+  assert.equal(handleRequest.resolveApiKey(' env-netlify-key ', 'saved-old-key'), 'env-netlify-key');
+  assert.equal(handleRequest.resolveApiKey('', ' saved-local-key '), 'saved-local-key');
 
   // 3. Validasi formatRecentItem kontrak
   const card = handleRequest.formatRecentItem({

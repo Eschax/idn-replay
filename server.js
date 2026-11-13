@@ -249,8 +249,12 @@ recordingsMeta = recordingsMeta.filter(rec => {
 });
 saveJson(RECORDINGS_META_FILE, recordingsMeta);
 
+function resolveApiKey(envKey, configKey) {
+  return (envKey || configKey || '').trim();
+}
+
 function getApiKey() {
-  return (appConfig.jkt48ConnectApiKey || getEnvVar('JKT48CONNECT_API_KEY')).trim();
+  return resolveApiKey(getEnvVar('JKT48CONNECT_API_KEY'), appConfig.jkt48ConnectApiKey);
 }
 
 function getTelegramToken() {
@@ -2150,6 +2154,7 @@ handleRequest.isValidRecId = isValidRecId;
 handleRequest.isAllowedStreamUrl = isAllowedStreamUrl;
 handleRequest.normalizePlaybackUrl = normalizePlaybackUrl;
 handleRequest.resolveReplayPlayerUrl = resolveReplayPlayerUrl;
+handleRequest.resolveApiKey = resolveApiKey;
 handleRequest.verifyCredentials = verifyCredentials;
 handleRequest.createSessionToken = createSessionToken;
 handleRequest.runCloudLiveNotifyCheck = runCloudLiveNotifyCheck;
