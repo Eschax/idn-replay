@@ -4,3 +4,4 @@ data/*.json
 .agents/
 .netlify/
 .env
+public/static-data/

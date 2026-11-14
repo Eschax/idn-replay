@@ -9,6 +9,12 @@ const state = {
   currentUser: null,
   pollIntervalId: null,
 
+  // Mode statis (GitHub Pages): tanpa server, data dibaca dari static-data/*.json
+  staticMode: false,
+  staticReplaysRaw: null,
+  staticRawById: new Map(),
+  staticDataNote: '',
+
   activeTab: 'replays',
   platform: 'ALL',
   selectedMember: '',
@@ -578,9 +584,61 @@ async function onAuthenticated(username) {
 }
 
 // ============================================================================
+// 0.5 MODE STATIS (GITHUB PAGES): TANPA LOGIN & TANPA SERVER NODE.JS
+// Data replay/live dibake otomatis oleh GitHub Actions setiap 30 menit.
+// ============================================================================
+async function fetchStaticJson(fileName) {
+  const res = await fetch(`static-data/${fileName}`, { cache: 'no-store' });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+function applyPresetEnrichment(formatted, raw) {
+  const preset = raw?._preset;
+  if (!preset) return formatted;
+  if (preset.youtubeId && !formatted.youtubeId) {
+    formatted.youtubeId = preset.youtubeId;
+    formatted.youtubeUrl = `https://www.youtube.com/watch?v=${preset.youtubeId}`;
+  }
+  if (preset.mp4Url) formatted.presetMp4Url = preset.mp4Url;
+  return formatted;
+}
+
+async function ensureStaticReplays() {
+  if (state.staticReplaysRaw) return;
+  const json = await fetchStaticJson('jkc-replays.json');
+  const list = json && Array.isArray(json.data) ? json.data : [];
+  state.staticReplaysRaw = list;
+  state.staticRawById = new Map(list.map(it => [String(it.data_id || it._id || ''), it]));
+}
+
+async function enterStaticMode() {
+  state.staticMode = true;
+  state.authenticated = true;
+  state.currentUser = 'pages';
+  document.body.classList.add('static-mode');
+  els.authUserBadge.textContent = '🌍 Mode Statis GitHub Pages';
+  els.loginOverlay.classList.add('hidden');
+  els.appShell.classList.remove('hidden');
+  if (els.jkcQuotaBadge) els.jkcQuotaBadge.textContent = 'Data statis — diperbarui otomatis tiap 30 menit';
+
+  await Promise.all([
+    loadMembers().catch(() => {}),
+    loadNowLive().catch(() => {}),
+    loadReplays().catch(() => {})
+  ]);
+}
+
+// ============================================================================
 // 1. DOWNLOAD MODAL & REPLAY DETAIL HELPER
 // ============================================================================
 async function getReplayDetail(dataId) {
+  if (state.staticMode) {
+    await ensureStaticReplays();
+    const raw = state.staticRawById.get(String(dataId));
+    if (!raw) throw new Error('Detail sesi ini tidak ada di data statis (hanya 60 sesi terbaru yang disimpan).');
+    return sanitizeReplayDetailPlayback(applyPresetEnrichment(formatReplayDetailClient(raw), raw));
+  }
   const res = await apiFetch(`/api/replays/${encodeURIComponent(dataId)}`);
   const json = await res.json();
   if (!res.ok || !json.ok || !json.data) {
@@ -2225,7 +2283,7 @@ function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, liveObj
   els.ytPlayer.classList.add('hidden');
   els.hlsPlayer.classList.remove('hidden');
 
-  if (liveObj && liveObj.bestStreamUrl) {
+  if (liveObj && liveObj.bestStreamUrl && !state.staticMode) {
     els.playerRecordBtn.classList.remove('hidden');
     els.playerRecordBtn.onclick = () => triggerRecordLive(liveObj);
   } else {
@@ -2244,13 +2302,13 @@ function playHlsStream({ title, platform, streamUrls, directPlaylistUrl, liveObj
         .join('');
       els.playerQualitySelect.onchange = e => {
         const chosen = streamUrls[Number(e.target.value)] || streamUrls[0];
-        attachHlsOrMp4ToVideo(`/api/hls-proxy?url=${encodeURIComponent(chosen.url)}`);
+        attachHlsOrMp4ToVideo(state.staticMode ? chosen.url : `/api/hls-proxy?url=${encodeURIComponent(chosen.url)}`);
       };
     } else {
       els.playerQualitySelect.classList.add('hidden');
     }
     const firstUrl = streamUrls[0].url;
-    attachHlsOrMp4ToVideo(`/api/hls-proxy?url=${encodeURIComponent(firstUrl)}`);
+    attachHlsOrMp4ToVideo(state.staticMode ? firstUrl : `/api/hls-proxy?url=${encodeURIComponent(firstUrl)}`);
     els.playerFooterInfo.innerHTML = `
       <span>Status: <strong>SEDANG LIVE (${escapeHtml(platform)})</strong></span>
       <span>Stream &amp; Komentar Real-Time Aktif</span>
@@ -2282,6 +2340,15 @@ els.closePlayerBtn.addEventListener('click', () => {
 // 5. MEMBERS, OSHI, AUTO-RECORD & TELEGRAM BOT SETTINGS
 // ============================================================================
 async function loadMembers() {
+  if (state.staticMode) {
+    const json = await fetchStaticJson('members.json');
+    if (json && Array.isArray(json.data)) {
+      state.members = json.data;
+      renderMemberChips();
+      renderOshiPanel();
+    }
+    return;
+  }
   try {
     const res = await apiFetch('/api/members');
     const json = await res.json();
@@ -2597,6 +2664,55 @@ async function loadReplays(force = false) {
     </div>
   `;
 
+  // Mode statis (GitHub Pages): filter & halaman dikerjakan di browser dari data bake Actions.
+  if (state.staticMode) {
+    await ensureStaticReplays();
+    let items = state.staticReplaysRaw.map(raw =>
+      applyPresetEnrichment(formatRecentItemClient(raw), raw)
+    );
+
+    const hasFilter = Boolean(state.selectedMember || state.searchQuery);
+    if (state.selectedMember) {
+      const mLower = state.selectedMember.toLowerCase();
+      items = items.filter(
+        it =>
+          it.nickname.toLowerCase().includes(mLower) ||
+          it.memberName.toLowerCase().includes(mLower) ||
+          it.title.toLowerCase().includes(mLower)
+      );
+    }
+    if (state.searchQuery) {
+      const qLower = state.searchQuery.toLowerCase();
+      items = items.filter(
+        it =>
+          it.title.toLowerCase().includes(qLower) ||
+          it.memberName.toLowerCase().includes(qLower) ||
+          it.nickname.toLowerCase().includes(qLower)
+      );
+    }
+    if (state.platform !== 'ALL') {
+      items = items.filter(it => it.platform === state.platform);
+    }
+
+    const perPage = 24;
+    const pageItems = hasFilter ? items : items.slice((state.page - 1) * perPage, state.page * perPage);
+    state.replays = pageItems;
+    if (state.staticReplaysRaw.length === 0) {
+      els.replaysGrid.innerHTML = `
+        <div class="state-box">
+          <h3>Belum ada data replay JKT48Connect</h3>
+          <p>API JKT48Connect kemungkinan sedang tidak tersedia saat data dibake. GitHub Actions akan mencoba lagi otomatis setiap 30 menit &mdash; muat ulang halaman nanti.</p>
+          <button class="btn-action" style="margin-top:12px" onclick="location.reload()">🔄 Muat Ulang</button>
+        </div>
+      `;
+      return;
+    }
+    renderReplaysGrid();
+    els.prevPageBtn.classList.toggle('hidden', hasFilter || state.page <= 1);
+    els.nextPageBtn.classList.toggle('hidden', hasFilter || state.page * perPage >= items.length);
+    return;
+  }
+
   let loadedItems = null;
   let loadError = '';
 
@@ -2779,6 +2895,16 @@ els.refreshBtn.addEventListener('click', () => {
 // 7. SEDANG LIVE MONITOR & TRIGGER RECORD
 // ============================================================================
 async function loadNowLive(force = false) {
+  if (state.staticMode) {
+    const json = await fetchStaticJson('now-live.json');
+    if (json && Array.isArray(json.data)) {
+      state.nowLive = json.data;
+      els.liveCountBadge.textContent = state.nowLive.length;
+      renderLiveMiniBanner();
+      renderLiveGrid();
+    }
+    return;
+  }
   try {
     const res = await fetch(`/api/now-live?refresh=${force ? '1' : '0'}`, { credentials: 'same-origin' });
     const text = await res.text();
@@ -3075,7 +3201,13 @@ function renderRecordingsList() {
       await onAuthenticated(json.user.username);
       return;
     }
+    // Endpoint menjawab JSON valid = server ada (Netlify/lokal) tapi belum login.
+    if (json && json.ok) {
+      showLoginGate();
+      return;
+    }
   } catch {}
 
-  showLoginGate();
+  // /api tidak tersedia (GitHub Pages statis) => mode statis tanpa login.
+  await enterStaticMode();
 })();

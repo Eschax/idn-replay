@@ -31,11 +31,23 @@ jobs:
         with:
           node-version: "22"
 
+      # Restore data bake terakhir agar situs tetap tayang saat API JKT48Connect sedang down
+      - name: Restore last static data cache
+        uses: actions/cache@v4
+        with:
+          path: public/static-data
+          key: static-data-${{ github.run_id }}
+          restore-keys: static-data-
+
       - name: Generate latest JKT48 Replay & Member Static Data
+        env:
+          JKT48CONNECT_API_KEY: ${{ secrets.JKT48CONNECT_API_KEY }}
         run: node scripts/update-static-data.js
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

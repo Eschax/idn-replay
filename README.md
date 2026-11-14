@@ -23,6 +23,15 @@ node server.js
 Atau klik dua kali file `start.bat` (Windows), lalu buka:
 - **http://localhost:3048**
 
-## Konfigurasi API JKT48Connect
+## Akses Online (GitHub Pages — Tanpa Server)
+
+Situs statis tersedia di **https://eschax.github.io/idn-replay/** dan bisa dibuka dari mana saja tanpa login:
+
+- GitHub Actions membake data (replay JKT48Connect, member, status live, arsip YouTube) ke `public/static-data/` setiap 30 menit, lalu deploy ke GitHub Pages.
+- API key tidak perlu diisi manual — disimpan sebagai secret repo `JKT48CONNECT_API_KEY` dan hanya dipakai di Actions (tidak pernah dikirim ke browser).
+- Jika API JKT48Connect sedang down saat bake, data terakhir yang berhasil dipertahankan (cache Actions).
+- Fitur yang butuh server Node.js (login multi-user, DVR rekam lokal, chat real-time, HLS proxy) tidak tersedia di mode statis; replay diputar langsung dari mirror MP4/YouTube/HLS resmi.
+
+## Konfigurasi API JKT48Connect (Mode Server Lokal/Netlify)
 
 Replay dimuat oleh server agar API key tidak dikirim dari browser. Setelah login, isi API key melalui panel **API Key JKT48Connect (Server-Side)**. Untuk Netlify, atur environment variable `JKT48CONNECT_API_KEY` di Site configuration lalu deploy ulang. Jika key belum tersedia, endpoint replay mengembalikan `503` dan video tidak dapat diputar.

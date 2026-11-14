@@ -2168,3 +2168,10 @@ body.theater .chat-section-dock {
   border-color: var(--text-main);
 }
 
+
+/* ===== Mode Statis (GitHub Pages): tanpa server Node.js ===== */
+body.static-mode [data-tab="recordings"],
+body.static-mode #logoutBtn,
+body.static-mode [data-rec-live] {
+  display: none !important;
+}
