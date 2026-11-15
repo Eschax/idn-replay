@@ -5,3 +5,4 @@ data/*.json
 .netlify/
 .env
 public/static-data/
+postman/

@@ -491,6 +491,21 @@ async function updateMembers() {
   return members.length;
 }
 
+// Kunci dedupe lintas-channel: sama member+tanggal dianggap sesi yang sama
+// (channel arsip beda sering meng-upload live yang sama, beda menit/judul)
+function youtubeTitleKey(title) {
+  const months = {
+    januari: 'jan', februari: 'feb', maret: 'mar', april: 'apr', juni: 'jun',
+    juli: 'jul', agustus: 'agu', september: 'sep', oktober: 'okt', november: 'nov', desember: 'des'
+  };
+  return (title || '')
+    .toLowerCase()
+    .replace(/januari|februari|maret|april|juni|juli|agustus|september|oktober|november|desember/g, m => months[m])
+    .replace(/\|?\s*\d{1,2}[.:]\d{2}\s*(wib|wita|wit)?/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 async function updateYoutubeReplays() {
   console.log('Mengambil daftar replay YouTube dari channel arsip & pencarian...');
   const results = await Promise.all([
@@ -500,12 +515,23 @@ async function updateYoutubeReplays() {
   ]);
 
   const seen = new Set();
+  const byTitleKey = new Map();
   const replays = [];
   for (const v of results.flat()) {
     if (!v || !v.videoId || seen.has(v.videoId)) continue;
     const lower = v.title.toLowerCase();
     if (!lower.includes('jkt48') && !lower.includes('idn') && !lower.includes('showroom')) continue;
     seen.add(v.videoId);
+    const key = `${v.platform || 'IDN'}|${youtubeTitleKey(v.title)}`;
+    const existingIdx = byTitleKey.get(key);
+    if (existingIdx !== undefined) {
+      // Duplikat lintas channel: simpan versi dengan durasi paling lengkap
+      if ((v.durationSeconds || 0) > (replays[existingIdx].durationSeconds || 0)) {
+        replays[existingIdx] = v;
+      }
+      continue;
+    }
+    byTitleKey.set(key, replays.length);
     replays.push(v);
   }
   replays.sort((a, b) => a.ageScore - b.ageScore);
