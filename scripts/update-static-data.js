@@ -233,9 +233,20 @@ async function searchYouTubeReplays(query, sp = 'CAISAhAB') {
   }
 }
 
-// --- JKT48CONNECT API (key dari env, dipakai di GitHub Actions; gagal = data lama dipertahankan) ---
+// --- JKT48CONNECT API (key dari env (Actions) atau config lokal; gagal = data lama dipertahankan) ---
+let localApiKeyCache = null;
+function getLocalApiKey() {
+  if (localApiKeyCache !== null) return localApiKeyCache;
+  try {
+    localApiKeyCache = require('../data/oshi_config.json').jkt48ConnectApiKey || '';
+  } catch {
+    localApiKeyCache = '';
+  }
+  return localApiKeyCache;
+}
+
 async function jkcFetch(endpointPath, searchParams = {}) {
-  const apiKey = (process.env.JKT48CONNECT_API_KEY || '').trim();
+  const apiKey = (process.env.JKT48CONNECT_API_KEY || getLocalApiKey()).trim();
   if (!apiKey) {
     return { ok: false, status: 0, body: null, reason: 'JKT48CONNECT_API_KEY tidak diset' };
   }
@@ -346,23 +357,45 @@ function mapNowLiveItem(item) {
 }
 
 async function updateJkcData() {
-  console.log('Mengambil daftar replay dari JKT48Connect (/api/recent)...');
-  const res = await jkcFetch('/api/recent', {
-    page: 1,
-    perpage: 60,
-    group: 'jkt48',
-    type: 'all',
-    sort: 'date',
-    order: '-1'
-  });
-  const rawList = Array.isArray(res.body?.recents)
-    ? res.body.recents
-    : Array.isArray(res.body)
-      ? res.body
-      : [];
-  if (!res.ok || rawList.length === 0) {
-    console.warn(`[WARN] JKC /api/recent gagal (status ${res.status}${res.reason ? ', ' + res.reason : ''}). Data lama dipertahankan.`);
-  } else {
+  console.log('Mengambil daftar replay dari JKT48Connect (/api/recent, halaman 1-4)...');
+  // JKC membatasi ~30 item/halaman; ambil beberapa halaman agar paging di sisi klien cukup dalam.
+  const seenIds = new Set();
+  const rawList = [];
+  let lastStatus = null;
+  for (let page = 1; page <= 4; page++) {
+    const res = await jkcFetch('/api/recent', {
+      page,
+      perpage: 60,
+      group: 'jkt48',
+      type: 'all',
+      sort: 'date',
+      order: '-1'
+    });
+    lastStatus = res.status;
+    const pageList = Array.isArray(res.body?.recents)
+      ? res.body.recents
+      : Array.isArray(res.body)
+        ? res.body
+        : [];
+    if (!res.ok || pageList.length === 0) {
+      if (page === 1) {
+        console.warn(`[WARN] JKC /api/recent gagal (status ${res.status}${res.reason ? ', ' + res.reason : ''}). Data lama dipertahankan.`);
+        break;
+      }
+      break;
+    }
+    let added = 0;
+    for (const item of pageList) {
+      const id = String(item.data_id || item._id || '');
+      if (!id || seenIds.has(id)) continue;
+      seenIds.add(id);
+      rawList.push(item);
+      added++;
+    }
+    console.log(`Halaman ${page}: +${added} sesi (total ${rawList.length}).`);
+    if (added === 0) break; // halaman berikutnya cuma duplikat => habis
+  }
+  if (rawList.length > 0) {
     // Enrich dengan mirror MP4 faststart & YouTube full dari preset.id (best-effort)
     let preset = null;
     const presetByNick = new Map();
@@ -378,7 +411,7 @@ async function updateJkcData() {
       if (matched) item._preset = matched;
     }
     const enriched = rawList.filter(item => item._preset).length;
-    console.log(`JKC recent: ${rawList.length} sesi, ${enriched} di antaranya kaya mirror preset.id.`);
+    console.log(`JKC recent: ${rawList.length} sesi, ${enriched} di antaranya kaya mirror preset.id. (status terakhir ${lastStatus})`);
   }
   writeKeepLastGood('jkc-replays.json', {
     ok: true,
