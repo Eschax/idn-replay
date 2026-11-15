@@ -468,6 +468,30 @@ async function getMembers() {
   } catch (err) {
     console.warn('[WARN] Gagal mengambil member dari JKT48Connect:', err.message);
   }
+  // Fallback gratis (tanpa key) saat JKT48Connect down: crstlnz
+  try {
+    const res = await fetch('https://api.crstlnz.my.id/api/member?group=jkt48', {
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(12000)
+    });
+    if (res.ok) {
+      const raw = await res.json();
+      const active = (Array.isArray(raw) ? raw : [])
+        .filter(m => !m.is_graduate && (!m.group || m.group === 'jkt48'))
+        .map(m => ({
+          id: m._id || m.url || m.name,
+          name: m.name,
+          nicknames: m.nicknames?.length ? m.nicknames : [m.name.split(' ')[0]],
+          img: normalizeMediaUrl(m.img_alt || m.img || ''),
+          url: m.url || '',
+          generation: m.generation || ''
+        }))
+        .sort((a, b) => (a.nicknames[0] || a.name).localeCompare(b.nicknames[0] || b.name));
+      if (active.length > 0) return active;
+    }
+  } catch (err) {
+    console.warn('[WARN] Fallback member crstlnz juga gagal:', err.message);
+  }
   return membersCache.data || [];
 }
 
@@ -826,6 +850,51 @@ async function getJkcReplayDetail(dataId, force = false) {
       }
     }
   };
+}
+
+// ============================================================================
+// 5.5 YOUTUBE ARCHIVE FALLBACK (SAAT JKT48CONNECT DOWN)
+// Dipakai ulang dari data bake scripts/update-static-data.js (item __yt).
+// ============================================================================
+function loadYoutubeFallbackReplays(page, perpage) {
+  try {
+    const file = path.join(PUBLIC_DIR, 'static-data', 'replays.json');
+    const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const list = Array.isArray(json.data) ? json.data : [];
+    if (list.length === 0) return null;
+    const all = list.map(v => ({
+      __yt: true,
+      dataId: '',
+      youtubeId: v.videoId,
+      youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+      platform: v.platform || 'IDN',
+      memberName: v.channel || '',
+      nickname: v.channel || '',
+      avatar: '',
+      thumb: v.thumb || '',
+      title: v.title || '',
+      liveTitle: v.title || '',
+      startedAt: '',
+      endedAt: '',
+      durationSeconds: v.durationSeconds || 0,
+      viewers: 0,
+      playbackStatus: 'ready',
+      parts: 1,
+      streamUrl: ''
+    }));
+    const pageNum = Math.max(1, Number(page) || 1);
+    const size = Math.max(1, Number(perpage) || 24);
+    return {
+      ok: true,
+      fallback: 'youtube',
+      page: pageNum,
+      perpage: size,
+      totalCount: all.length,
+      data: all.slice((pageNum - 1) * size, pageNum * size)
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================================
@@ -1495,7 +1564,8 @@ async function runCloudLiveNotifyCheck() {
 }
 
 if (!IS_SERVERLESS && require.main === module) {
-  setInterval(checkAutoRecord, 45 * 1000);
+  // 2 menit: 45 detik boros kuota JKC (~57rb/bulan jika 24/7); 2 menit cukup responsif
+  setInterval(checkAutoRecord, 120 * 1000);
   setTimeout(checkAutoRecord, 4000);
   (async function tgPollLoop() {
     while (true) {
@@ -1680,7 +1750,12 @@ async function handleRequest(req, res) {
       const platform = parsedUrl.searchParams.get('platform') || 'ALL';
       const force = parsedUrl.searchParams.get('refresh') === '1';
 
-      const result = await getJkcReplays({ page, perpage, platform, member, query, force });
+      let result = await getJkcReplays({ page, perpage, platform, member, query, force });
+      // Fallback saat JKT48Connect down: arsip YouTube hasil bake (frontend mengerti item __yt)
+      if (!result.ok) {
+        const fallback = loadYoutubeFallbackReplays(page, perpage);
+        if (fallback) result = fallback;
+      }
       return sendJson(res, 200, result);
     }
 
