@@ -632,6 +632,21 @@ async function enterStaticMode() {
 // ============================================================================
 // 1. DOWNLOAD MODAL & REPLAY DETAIL HELPER
 // ============================================================================
+// Detail sintetis untuk fallback arsip YouTube (mode statis, kuota JKC habis)
+function buildYtFallbackDetail(item) {
+  return sanitizeReplayDetailPlayback({
+    ...item,
+    combinedStreamUrl: '',
+    recordings: [],
+    youtubeVideos: [],
+    fans: [],
+    goldSummary: null,
+    giftItems: [],
+    screenshots: [],
+    leaderboards: {}
+  });
+}
+
 async function getReplayDetail(dataId) {
   if (state.staticMode) {
     await ensureStaticReplays();
@@ -1599,7 +1614,7 @@ function attachHlsOrMp4ToVideo(url, { onFatalError } = {}) {
 async function openAndPlayJkcReplay(item, defaultSideTab = 'chat') {
   showToast(`Memuat stream & detail ${item.nickname}...`);
   try {
-    const d = await getReplayDetail(item.dataId);
+    const d = item.__yt ? buildYtFallbackDetail(item) : await getReplayDetail(item.dataId);
     destroyHls();
     state.currentPlayingReplay = d;
     state.currentPartIdx = 0;
@@ -2666,10 +2681,41 @@ async function loadReplays(force = false) {
 
   // Mode statis (GitHub Pages): filter & halaman dikerjakan di browser dari data bake Actions.
   if (state.staticMode) {
+    if (force) state.staticReplaysRaw = null;
     await ensureStaticReplays();
-    let items = state.staticReplaysRaw.map(raw =>
-      applyPresetEnrichment(formatRecentItemClient(raw), raw)
-    );
+    let items;
+    let isYtFallback = false;
+
+    if (state.staticReplaysRaw.length > 0) {
+      items = state.staticReplaysRaw.map(raw =>
+        applyPresetEnrichment(formatRecentItemClient(raw), raw)
+      );
+    } else {
+      // Kuota JKT48Connect habis / API down: pakai arsip YouTube yang ter-bake.
+      isYtFallback = true;
+      const ytJson = await fetchStaticJson('replays.json');
+      const ytList = ytJson && Array.isArray(ytJson.data) ? ytJson.data : [];
+      items = ytList.map(v => ({
+        __yt: true,
+        dataId: '',
+        youtubeId: v.videoId,
+        youtubeUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+        platform: v.platform || 'IDN',
+        memberName: v.channel || '',
+        nickname: v.channel || '',
+        avatar: '',
+        thumb: v.thumb || '',
+        title: v.title || '',
+        liveTitle: v.title || '',
+        startedAt: '',
+        endedAt: '',
+        durationSeconds: v.durationSeconds || 0,
+        viewers: 0,
+        playbackStatus: 'ready',
+        parts: 1,
+        streamUrl: ''
+      }));
+    }
 
     const hasFilter = Boolean(state.selectedMember || state.searchQuery);
     if (state.selectedMember) {
@@ -2697,15 +2743,18 @@ async function loadReplays(force = false) {
     const perPage = 24;
     const pageItems = hasFilter ? items : items.slice((state.page - 1) * perPage, state.page * perPage);
     state.replays = pageItems;
-    if (state.staticReplaysRaw.length === 0) {
+    if (items.length === 0) {
       els.replaysGrid.innerHTML = `
         <div class="state-box">
-          <h3>Belum ada data replay JKT48Connect</h3>
-          <p>API JKT48Connect kemungkinan sedang tidak tersedia saat data dibake. GitHub Actions akan mencoba lagi otomatis setiap 30 menit &mdash; muat ulang halaman nanti.</p>
+          <h3>${isYtFallback ? 'Tidak ada arsip YouTube yang cocok' : 'Belum ada data replay JKT48Connect'}</h3>
+          <p>${isYtFallback ? 'Coba reset filter member atau pilih platform lain.' : 'API JKT48Connect sedang tidak tersedia/kuota habis saat data dibake. GitHub Actions mencoba lagi otomatis setiap 30 menit &mdash; muat ulang halaman nanti.'}</p>
           <button class="btn-action" style="margin-top:12px" onclick="location.reload()">🔄 Muat Ulang</button>
         </div>
       `;
       return;
+    }
+    if (isYtFallback) {
+      els.jkcQuotaBadge.textContent = `Mode cadangan: arsip YouTube (${items.length} video) — replay JKT48Connect kembali saat kuota API reset`;
     }
     renderReplaysGrid();
     els.prevPageBtn.classList.toggle('hidden', hasFilter || state.page <= 1);
@@ -2808,8 +2857,12 @@ function renderReplaysGrid() {
             </div>
             <div class="card-actions">
               <button class="btn-action" data-play-idx="${idx}" style="flex:1">▶ Tonton</button>
-              <button class="btn-action subtle" data-dl-idx="${idx}" title="Download Video Replay (.MP4)">⬇ Download</button>
-              <button class="btn-action subtle" data-gift-idx="${idx}" title="Lihat Top Gifter, Download per Bagian & Screenshot">🎁 Rekap</button>
+              ${
+                item.__yt
+                  ? ''
+                  : `<button class="btn-action subtle" data-dl-idx="${idx}" title="Download Video Replay (.MP4)">⬇ Download</button>
+              <button class="btn-action subtle" data-gift-idx="${idx}" title="Lihat Top Gifter, Download per Bagian & Screenshot">🎁 Rekap</button>`
+              }
             </div>
           </div>
         </article>
