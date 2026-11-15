@@ -506,6 +506,26 @@ els.loginForm.addEventListener('submit', async e => {
   els.loginSubmitBtn.disabled = true;
   els.loginSubmitBtn.textContent = 'Memverifikasi...';
 
+  // Mode statis: verifikasi lokal via SHA-256 (tanpa server)
+  if (state.staticMode) {
+    const u = els.loginUsername.value.trim().toLowerCase();
+    const acc = STATIC_ACCOUNTS.find(a => a.username === u);
+    const hex = await sha256Hex(`${acc ? acc.salt : 'x'}:${els.loginPassword.value}`);
+    if (acc && hex === acc.hash) {
+      localStorage.setItem(STATIC_AUTH_KEY, acc.hash);
+      els.loginPassword.value = '';
+      els.loginSubmitBtn.disabled = false;
+      els.loginSubmitBtn.textContent = 'Masuk ke Studio →';
+      await enterStaticMode();
+    } else {
+      els.loginErrorMsg.textContent = 'Username atau password salah.';
+      els.loginErrorMsg.classList.remove('hidden');
+      els.loginSubmitBtn.disabled = false;
+      els.loginSubmitBtn.textContent = 'Masuk ke Studio →';
+    }
+    return;
+  }
+
   try {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
@@ -547,6 +567,11 @@ els.loginForm.addEventListener('submit', async e => {
 });
 
 els.logoutBtn.addEventListener('click', async () => {
+  if (state.staticMode) {
+    localStorage.removeItem(STATIC_AUTH_KEY);
+    location.reload();
+    return;
+  }
   try {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
   } catch {}
@@ -584,9 +609,23 @@ async function onAuthenticated(username) {
 }
 
 // ============================================================================
-// 0.5 MODE STATIS (GITHUB PAGES): TANPA LOGIN & TANPA SERVER NODE.JS
+// 0.5 MODE STATIS (GITHUB PAGES): TANPA SERVER NODE.JS
 // Data replay/live dibake otomatis oleh GitHub Actions setiap 30 menit.
+// Gerbang login hanya pelindung UI — file data statis tetap publik.
+// Password dicek via SHA-256 (hash di bawah, salt:password) — ganti dengan
+// `node scripts/hash-password.js` bila password diganti.
 // ============================================================================
+const STATIC_ACCOUNTS = [
+  { username: 'escha', salt: '7c9cab4983b89d42b388515005279f2f', hash: 'b011c3f65b14129acb476371192034c634e296a809d19ab7213b687ff99491e5' },
+  { username: 'oshi48', salt: '7c9cab4983b89d42b388515005279f2f', hash: 'b011c3f65b14129acb476371192034c634e296a809d19ab7213b687ff99491e5' }
+];
+const STATIC_AUTH_KEY = 'staticAuth';
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function fetchStaticJson(fileName) {
   const res = await fetch(`static-data/${fileName}`, { cache: 'no-store' });
   if (!res.ok) return null;
@@ -3261,6 +3300,11 @@ function renderRecordingsList() {
     }
   } catch {}
 
-  // /api tidak tersedia (GitHub Pages statis) => mode statis tanpa login.
-  await enterStaticMode();
+  // /api tidak tersedia (GitHub Pages statis) => mode statis dengan gerbang login.
+  state.staticMode = true;
+  if (localStorage.getItem(STATIC_AUTH_KEY) === STATIC_ACCOUNTS[0].hash) {
+    await enterStaticMode();
+  } else {
+    showLoginGate();
+  }
 })();
