@@ -1410,14 +1410,6 @@ body.theater .chat-section-dock {
   contain-intrinsic-size: 36px;
   transition: background 0.15s, border-color 0.15s;
 }
-  gap: 8px;
-  font-size: 12.5px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid transparent;
-  transition: background 0.15s, border-color 0.15s;
-}
 
 .chat-msg.active-sync {
   background: rgba(244, 63, 94, 0.14);
@@ -2173,4 +2165,54 @@ body.theater .chat-section-dock {
 body.static-mode [data-tab="recordings"],
 body.static-mode [data-rec-live] {
   display: none !important;
+}
+
+/* ===== MOBILE (≤640px): sentuh dulu — target tap ≥44px, tanpa scroll horizontal ===== */
+@media (max-width: 640px) {
+  /* Padding ramping biar video & kartu selebar mungkin */
+  .container { padding: 12px 10px 48px; }
+  .topbar-inner { padding: 10px 12px; gap: 10px; }
+
+  /* Cegah scroll horizontal (badge header & toolbar panjang) */
+  body,
+  .container { overflow-x: hidden; }
+  .user-pill { max-width: 100%; flex-wrap: wrap; row-gap: 4px; }
+
+  /* Grid video: 1 kolom rapat */
+  .video-grid { grid-template-columns: 1fr; gap: 12px; }
+
+  /* Semua tombol aksi mudah dicolek */
+  .btn-action { min-height: 44px; padding: 10px 14px; font-size: 13.5px; }
+  .card-actions { gap: 8px; }
+  .card-actions .btn-action { flex: 1 1 auto; }
+
+  /* Chip member: scroll mulus tanpa scrollbar jelek */
+  .member-chips { gap: 6px; scrollbar-width: none; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+  .member-chips::-webkit-scrollbar { display: none; }
+  .member-chip { min-height: 40px; padding: 8px 12px; }
+
+  /* Tab navigasi atas */
+  .nav-tab { min-height: 44px; padding: 10px 14px; }
+
+  /* Player: video selebar layar, control bar rapi dalam 2 baris */
+  .player-split-layout { grid-template-columns: 1fr; gap: 10px; padding: 10px; }
+  .player-custom-controls { flex-wrap: wrap; justify-content: center; padding: 8px; row-gap: 8px; }
+  .player-custom-controls .btn-ctrl-play { width: 48px; height: 48px; font-size: 18px; }
+  .player-custom-controls .btn-ctrl-skip,
+  .player-custom-controls .btn-ctrl-speed,
+  .player-custom-controls .btn-ctrl-fullscreen { min-width: 46px; height: 42px; font-size: 13px; }
+  .ctrl-seek-slider-wrap { flex-basis: 100%; order: 10; }
+  .ctrl-time-display { flex-basis: 100%; order: 11; text-align: center; font-size: 12.5px; }
+
+  /* Toolbar aksi (Switch Player / Chat / Gift / Download / Theater) */
+  .video-actions { gap: 6px; padding: 10px; }
+  .va-btn { min-height: 40px; }
+
+  /* Topbar: baris cari + tombol user menyusut, gak dorong keluar layar */
+  .search-actions { width: 100%; flex-wrap: wrap; }
+  .search-box { flex: 1 1 150px; min-width: 0; }
+
+  /* Tab dock chat/gift/screenshot tak terpotong */
+  .chat-tab-pill { min-height: 40px; padding: 8px 14px; font-size: 13px; }
+  .dock-panel { max-height: 55vh; overflow-y: auto; }
 }
